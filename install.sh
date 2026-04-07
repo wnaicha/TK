@@ -3,8 +3,14 @@ set -e
 
 # ==============================================
 # TikTok 终极抗风控 · 镜像加速版 (V3.0)
-# 特点：绕过 GitHub 拦截、CDN 加速下载、强制重置环境
+# 整合：自动版本 / 多架构 / 自动提取 sbnh 版本号
 # ==============================================
+
+# ================= 核心变量（可自行修改）=================
+sbcore="1.8.10"             # 版本号
+sbname="sing-box-$sbcore-linux"
+sbpath="/usr/local/bin"
+# ========================================================
 
 # 1. 环境初始化
 apt update -y && apt install -y curl openssl chrony needrestart tar
@@ -31,30 +37,44 @@ vm.swappiness=10
 EOF
 sysctl --system
 
-# 3. 下载 sing-box (使用镜像加速，绕过 GitHub 拦截)
-echo "正在通过加速通道下载 sing-box..."
+# 3. 自动识别架构
 ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then PLATFORM="amd64"; else PLATFORM="arm64"; fi
+if [ "$ARCH" = "x86_64" ]; then
+  PLATFORM="amd64"
+else
+  PLATFORM="arm64"
+fi
+sbfile="${sbname}-${PLATFORM}"
+DOWNLOAD_URL="https://mirror.ghproxy.com/https://github.com/SagerNet/sing-box/releases/download/v${sbcore}/${sbfile}.tar.gz"
 
-# 这里换成了镜像站链接，专门对付机房 IP 被 GitHub 拦截的问题
-DOWNLOAD_URL="https://mirror.ghproxy.com/https://github.com/SagerNet/sing-box/releases/download/v1.8.10/sing-box-1.8.10-linux-$PLATFORM.tar.gz"
+# 4. 下载 + 安装 sing-box（整合你要的逻辑）
+echo "正在下载 sing-box v$sbcore ($PLATFORM)..."
+curl -L -o /tmp/sing-box.tar.gz -# --retry 2 "$DOWNLOAD_URL"
 
-curl -Lo /tmp/sb.tar.gz "$DOWNLOAD_URL"
+if [[ -f '/tmp/sing-box.tar.gz' ]]; then
+  # 检测是否下载成HTML错误页
+  if grep -q "<!doctype html>" /tmp/sing-box.tar.gz; then
+    echo -e "\033[33mGH代理失效，切换官方直连...\033[0m"
+    curl -L -o /tmp/sing-box.tar.gz -# --retry 2 "https://github.com/SagerNet/sing-box/releases/download/v${sbcore}/${sbfile}.tar.gz"
+  fi
 
-# 检查文件是否真的是 HTML (如果是 HTML 说明又被拦截了)
-if grep -q "<!doctype html>" /tmp/sb.tar.gz; then
-    echo -e "\033[31m警告：下载链接仍被 GitHub 拦截！尝试备用方案...\033[0m"
-    # 备用方案：直接从我们指定的快速节点下载
-    curl -Lo /tmp/sb.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v1.8.10/sing-box-1.8.10-linux-$PLATFORM.tar.gz"
+  # 解压安装
+  tar xzf /tmp/sing-box.tar.gz -C /tmp
+  mv /tmp/${sbfile}/sing-box $sbpath/
+  chown root:root $sbpath/sing-box
+  chmod +x $sbpath/sing-box
+  rm -rf /tmp/sing-box.tar.gz /tmp/${sbfile}
+
+  # 自动提取主版本号 sbnh
+  sbnh=$($sbpath/sing-box version 2>/dev/null | awk '/version/{print $NF}' | cut -d '.' -f 1,2)
+  echo -e "\033[32mSing-box 安装成功 | 版本：$($sbpath/sing-box version | awk '/version/{print $NF}') | 主版本：$sbnh\033[0m"
+else
+  echo -e "\033[31m下载失败！\033[0m"
+  exit 1
 fi
 
-tar -xzf /tmp/sb.tar.gz -C /tmp
-mv /tmp/sing-box-*/sing-box /usr/local/bin/
-chmod +x /usr/local/bin/sing-box
-rm -rf /tmp/sb.tar.gz /tmp/sing-box-*
-
-# 4. 生成配置与密钥
-KEY_PAIR=$(/usr/local/bin/sing-box generate reality-keypair)
+# 5. 生成配置与密钥
+KEY_PAIR=$($sbpath/sing-box generate reality-keypair)
 PRIVATE_KEY=$(echo "$KEY_PAIR" | awk '/Private key/ {print $3}')
 PUBLIC_KEY=$(echo "$KEY_PAIR" | awk '/Public key/ {print $3}')
 SHORT_ID=$(openssl rand -hex 4)
@@ -86,13 +106,13 @@ cat > /etc/sing-box/config.json <<JSON
 }
 JSON
 
-# 5. 启动服务
+# 6. 注册系统服务
 cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
 Description=sing-box service
 After=network.target
 [Service]
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecStart=$sbpath/sing-box run -c /etc/sing-box/config.json
 Restart=always
 User=root
 [Install]
@@ -102,6 +122,7 @@ EOF
 systemctl daemon-reload
 systemctl enable --now sing-box
 
-# 6. 输出结果
-echo -e "\n\033[32m配置生成成功！\033[0m"
+# 7. 输出节点信息
+echo -e "\n\033[32m======== TikTok 抗风控节点生成成功 ========\033[0m"
 echo "vless://$UUID@$IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.apple.com&fp=safari&pbk=$PUBLIC_KEY&sid=$SHORT_ID#TK-$IP"
+echo -e "\033[32m===========================================\033[0m"
