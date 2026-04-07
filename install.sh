@@ -1,27 +1,19 @@
+cat << 'EOF' > /root/tk.sh
 #!/bin/bash
 set -e
 
-# ==============================
-# TikTok 一键部署 - 终极无报错版
-# ==============================
-
+# 1. 基础依赖
 apt update -y
-apt install -y curl openssl chrony needrestart
+apt install -y curl openssl chrony needrestart gnupg2
 
-mkdir -p /etc/needrestart/conf.d
-echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-autorestart.conf
+# 2. 彻底清理之前的 sysctl 乱象
+cat > /etc/sysctl.conf <<CONF
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+CONF
 
-sysctl -w net.ipv6.conf.all.disable_ipv6=1
-sysctl -w net.ipv6.conf.default.disable_ipv6=1
-
-timedatectl set-timezone UTC
-
-# ========== 修复： chronyd → chrony 解决报错 ==========
-systemctl restart chrony
-systemctl enable chrony
-# ======================================================
-
-cat >> /etc/sysctl.conf <<EOF
+cat > /etc/sysctl.d/99-tiktok.conf <<CONF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
@@ -34,31 +26,27 @@ net.core.rmem_max=67108864
 net.core.wmem_max=67108864
 net.ipv4.tcp_max_syn_backlog=8192
 vm.swappiness=10
-EOF
-sysctl -p
+CONF
+sysctl --system
 
-# 安装 sing-box
-curl -Ls https://sing-box.sagernet.org/install.sh | bash -s -- --latest
+# 3. 换一种更稳的方式安装 sing-box (不走 github 脚本)
+curl -fsSL https://sing-box.sagernet.org/gpg.key | gpg --dearmor -o /etc/apt/keyrings/sagernet.gpg
+echo "deb [signed-by=/etc/apt/keyrings/sagernet.gpg] https://deb.sagernet.org/ nodes main" > /etc/apt/sources.list.d/sagernet.list
+apt update
+apt install sing-box -y
 
-# 你写的完美密钥生成逻辑
+# 4. 生成密钥
 echo "正在本地生成 REALITY 密钥..."
 KEY_PAIR=$(sing-box generate reality-keypair)
-
 PRIVATE_KEY=$(echo "$KEY_PAIR" | awk '/Private key/ {print $3}')
 PUBLIC_KEY=$(echo "$KEY_PAIR" | awk '/Public key/ {print $3}')
 
-if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
-    echo -e "\033[31m错误：密钥生成失败！\033[0m"
-    exit 1
-fi
-echo "密钥生成成功：私钥与公钥已匹配 ✅"
-
 SHORT_ID=$(openssl rand -hex 4)
 UUID=$(cat /proc/sys/kernel/random/uuid)
-PORT=443
-SNI="www.apple.com"
+IP=$(curl -s --ipv4 ifconfig.me)
 
-cat > /etc/sing-box/config.json <<EOF
+# 5. 写入配置
+cat > /etc/sing-box/config.json <<JSON
 {
   "log": {"level": "warn"},
   "inbounds": [{
@@ -69,10 +57,10 @@ cat > /etc/sing-box/config.json <<EOF
     "users": [{"uuid": "$UUID", "flow": "xtls-rprx-vision"}],
     "tls": {
       "enabled": true,
-      "server_name": "$SNI",
+      "server_name": "www.apple.com",
       "reality": {
         "enabled": true,
-        "handshake": {"server": "$SNI", "server_port": 443},
+        "handshake": {"server": "www.apple.com", "server_port": 443},
         "private_key": "$PRIVATE_KEY",
         "short_id": ["$SHORT_ID"]
       }
@@ -80,31 +68,25 @@ cat > /etc/sing-box/config.json <<EOF
   }],
   "outbounds": [{"type": "direct", "tag": "direct"}]
 }
-EOF
+JSON
 
 systemctl daemon-reload
 systemctl enable --now sing-box
 
-IP=$(curl -s --ipv4 ifconfig.me)
-
-echo -e "\n\033[32m##################################################"
-echo -e "###       TikTok 矩阵专用配置 (Nikki/VLESS)     ###"
-echo "##################################################\033[0m"
-
-echo "--- 1. 手机 Nikki YAML 格式 ---"
+echo -e "\n\033[32m配置生成成功！\033[0m"
+echo "--- 手机 Nikki YAML ---"
 echo "- name: \"TK-iPhone-$(echo $IP | cut -d. -f4)\"
   type: vless
   server: $IP
-  port: $PORT
+  port: 443
   uuid: $UUID
-  udp: true
   tls: true
   flow: xtls-rprx-vision
-  servername: $SNI
-  reality-opts:
-    public-key: $PUBLIC_KEY
-    short-id: $SHORT_ID
+  servername: www.apple.com
+  reality-opts: { public-key: $PUBLIC_KEY, short-id: $SHORT_ID }
   client-fingerprint: safari"
+echo -e "\n--- VLESS 链接 ---"
+echo "vless://$UUID@$IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.apple.com&fp=safari&pbk=$PUBLIC_KEY&sid=$SHORT_ID#TK-$IP"
+EOF
 
-echo -e "\n--- 2. VLESS 链接 ---"
-echo "vless://$UUID@$IP:$PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=safari&pbk=$PUBLIC_KEY&sid=$SHORT_ID#TK-$IP"
+bash /root/tk.sh
