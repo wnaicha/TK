@@ -1,27 +1,47 @@
+cat << 'EOF' > /root/tk.sh
 #!/bin/bash
 set -e
 
-# ==============================================
-# TikTok 终极抗风控 · 镜像加速版 (V3.0)
-# 整合：自动版本 / 多架构 / 自动提取 sbnh 版本号
-# ==============================================
+# --- 1. 环境初始化 ---
+echo "正在准备安装环境..."
+apt update -y && apt install -y curl openssl chrony tar wget grep
 
-# ================= 核心变量（可自行修改）=================
-sbcore="1.8.10"             # 版本号
-sbname="sing-box-$sbcore-linux"
-sbpath="/usr/local/bin"
-# ========================================================
+# --- 2. 借用“高手”的内核版本获取与路径逻辑 ---
+cpu=$(uname -m)
+[ "$cpu" = "x86_64" ] && cpu="amd64" || cpu="arm64"
 
-# 1. 环境初始化
-apt update -y && apt install -y curl openssl chrony needrestart tar
+# 动态获取最新版本号
+sbcore=$(curl -Ls https://github.com/SagerNet/sing-box/releases/latest | grep -oP 'tag/v\K[0-9.]+' | head -n 1)
+[ -z "$sbcore" ] && sbcore="1.10.7" # 兜底版本
 
-# 2. 彻底清理 sysctl 乱象 (防止之前刷屏重复)
-cat > /etc/sysctl.conf <<EOF
-net.ipv4.ip_forward = 1
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-EOF
-cat > /etc/sysctl.d/99-tiktok.conf <<EOF
+sbname="sing-box-$sbcore-linux-$cpu"
+mkdir -p /etc/s-box
+
+# --- 3. 借用“高手”的专业下载逻辑 (带重试与校验) ---
+echo "正在下载 Sing-box v$sbcore..."
+# 使用镜像站加速，同时保留高手的 --retry 参数
+curl -L -o /etc/s-box/sing-box.tar.gz -# --retry 2 "https://mirror.ghproxy.com/https://github.com/SagerNet/sing-box/releases/download/v$sbcore/$sbname.tar.gz"
+
+# 校验下载是否成功 (高手逻辑第一层)
+if [[ -f '/etc/s-box/sing-box.tar.gz' ]]; then
+    tar xzf /etc/s-box/sing-box.tar.gz -C /etc/s-box
+    mv /etc/s-box/$sbname/sing-box /etc/s-box/sing-box
+    rm -rf /etc/s-box/{sing-box.tar.gz,$sbname}
+    
+    # 校验解压是否成功 (高手逻辑第二层)
+    if [[ -f '/etc/s-box/sing-box' ]]; then
+        chown root:root /etc/s-box/sing-box
+        chmod +x /etc/s-box/sing-box
+        echo "成功安装内核版本：$(/etc/s-box/sing-box version | awk '/version/{print $NF}')"
+    else
+        echo -e "\033[31m错误：下载内核不完整，安装失败！\033[0m" && exit 1
+    fi
+else
+    echo -e "\033[31m错误：下载内核失败，请检查网络！\033[0m" && exit 1
+fi
+
+# --- 4. TikTok 内核参数优化 ---
+cat > /etc/sysctl.d/99-tiktok.conf <<CONF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 net.ipv4.tcp_fastopen=3
@@ -34,55 +54,19 @@ net.core.rmem_max=67108864
 net.core.wmem_max=67108864
 net.ipv4.tcp_max_syn_backlog=8192
 vm.swappiness=10
-EOF
-sysctl --system
+CONF
+sysctl --system >/dev/null 2>&1
 
-# 3. 自动识别架构
-ARCH=$(uname -m)
-if [ "$ARCH" = "x86_64" ]; then
-  PLATFORM="amd64"
-else
-  PLATFORM="arm64"
-fi
-sbfile="${sbname}-${PLATFORM}"
-DOWNLOAD_URL="https://mirror.ghproxy.com/https://github.com/SagerNet/sing-box/releases/download/v${sbcore}/${sbfile}.tar.gz"
-
-# 4. 下载 + 安装 sing-box（整合你要的逻辑）
-echo "正在下载 sing-box v$sbcore ($PLATFORM)..."
-curl -L -o /tmp/sing-box.tar.gz -# --retry 2 "$DOWNLOAD_URL"
-
-if [[ -f '/tmp/sing-box.tar.gz' ]]; then
-  # 检测是否下载成HTML错误页
-  if grep -q "<!doctype html>" /tmp/sing-box.tar.gz; then
-    echo -e "\033[33mGH代理失效，切换官方直连...\033[0m"
-    curl -L -o /tmp/sing-box.tar.gz -# --retry 2 "https://github.com/SagerNet/sing-box/releases/download/v${sbcore}/${sbfile}.tar.gz"
-  fi
-
-  # 解压安装
-  tar xzf /tmp/sing-box.tar.gz -C /tmp
-  mv /tmp/${sbfile}/sing-box $sbpath/
-  chown root:root $sbpath/sing-box
-  chmod +x $sbpath/sing-box
-  rm -rf /tmp/sing-box.tar.gz /tmp/${sbfile}
-
-  # 自动提取主版本号 sbnh
-  sbnh=$($sbpath/sing-box version 2>/dev/null | awk '/version/{print $NF}' | cut -d '.' -f 1,2)
-  echo -e "\033[32mSing-box 安装成功 | 版本：$($sbpath/sing-box version | awk '/version/{print $NF}') | 主版本：$sbnh\033[0m"
-else
-  echo -e "\033[31m下载失败！\033[0m"
-  exit 1
-fi
-
-# 5. 生成配置与密钥
-KEY_PAIR=$($sbpath/sing-box generate reality-keypair)
+# --- 5. 生成配置与 REALITY 密钥 ---
+# 这里一定要用刚装好的内核来生成密钥，确保公钥不为空
+KEY_PAIR=$(/etc/s-box/sing-box generate reality-keypair)
 PRIVATE_KEY=$(echo "$KEY_PAIR" | awk '/Private key/ {print $3}')
 PUBLIC_KEY=$(echo "$KEY_PAIR" | awk '/Public key/ {print $3}')
-SHORT_ID=$(openssl rand -hex 4)
 UUID=$(cat /proc/sys/kernel/random/uuid)
-IP=$(curl -s --ipv4 ifconfig.me)
+SHORT_ID=$(openssl rand -hex 4)
+IP=$(curl -s4m5 icanhazip.com)
 
-mkdir -p /etc/sing-box
-cat > /etc/sing-box/config.json <<JSON
+cat > /etc/s-box/config.json <<JSON
 {
   "log": {"level": "warn"},
   "inbounds": [{
@@ -106,23 +90,28 @@ cat > /etc/sing-box/config.json <<JSON
 }
 JSON
 
-# 6. 注册系统服务
-cat > /etc/systemd/system/sing-box.service <<EOF
+# --- 6. 启动服务 ---
+cat > /etc/systemd/system/sing-box.service <<S_EOF
 [Unit]
 Description=sing-box service
 After=network.target
 [Service]
-ExecStart=$sbpath/sing-box run -c /etc/sing-box/config.json
+ExecStart=/etc/s-box/sing-box run -c /etc/s-box/config.json
 Restart=always
 User=root
 [Install]
 WantedBy=multi-user.target
-EOF
+S_EOF
 
 systemctl daemon-reload
 systemctl enable --now sing-box
 
-# 7. 输出节点信息
-echo -e "\n\033[32m======== TikTok 抗风控节点生成成功 ========\033[0m"
+# --- 7. 输出结果 ---
+echo -e "\n\033[32mTikTok 矩阵节点全自动部署成功！\033[0m"
+echo "--------------------------------------------------"
+echo "VLESS 链接 (直接导入手机):"
 echo "vless://$UUID@$IP:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.apple.com&fp=safari&pbk=$PUBLIC_KEY&sid=$SHORT_ID#TK-$IP"
-echo -e "\033[32m===========================================\033[0m"
+echo "--------------------------------------------------"
+EOF
+
+bash /root/tk.sh
