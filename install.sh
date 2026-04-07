@@ -2,10 +2,10 @@
 
 # ==============================================
 # TikTok 终极抗风控·全自动无弹窗批量部署版
-# 无交互 · 防空Key · 不卡机 · 高稳定
+# 无交互 · 公私钥完美匹配 · 美国机器专用
 # ==============================================
 
-# 0. 永久关闭 needrestart 弹窗（永不卡住）
+# 0. 永久关闭 needrestart 弹窗
 apt update && apt install -y curl openssl chrony needrestart
 mkdir -p /etc/needrestart/conf.d
 echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-autorestart.conf
@@ -35,39 +35,29 @@ vm.swappiness=10
 EOF
 sysctl -p
 
-# 4. 生成 REALITY 密钥（自动重试3次）
-echo "正在生成 REALITY 密钥..."
-for i in {1..3}; do
-    KEYS=$(curl -sL --connect-timeout 10 --max-time 30 \
-        https://github.com/SagerNet/sing-box/releases/download/v1.8.10/sing-box-1.8.10-linux-amd64.tar.gz \
-        | tar -xzO */sing-box generate reality-keypair 2>/dev/null)
-    
-    PRIVATE_KEY=$(echo "$KEYS" | awk '/Private key/ {print $3}')
-    PUBLIC_KEY=$(echo "$KEYS" | awk '/Public key/ {print $3}')
-    
-    if [ -n "$PRIVATE_KEY" ] && [ -n "$PUBLIC_KEY" ]; then
-        echo "密钥生成成功 ✅"
-        break
-    else
-        echo "第 $i 次失败，重试中..."
-        sleep 2
-    fi
-done
+# 4. 静默安装 sing-box
+bash <(curl -Ls https://sing-box.sagernet.org/install.sh) --latest
+
+# ==================== 你的最强版本 ====================
+echo "正在本地生成 REALITY 密钥..."
+KEY_PAIR=$(sing-box generate reality-keypair)
+
+PRIVATE_KEY=$(echo "$KEY_PAIR" | awk '/Private key/ {print $3}')
+PUBLIC_KEY=$(echo "$KEY_PAIR" | awk '/Public key/ {print $3}')
 
 if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
-    echo -e "\033[31m错误：网络异常，密钥生成失败！\033[0m"
+    echo -e "\033[31m错误：密钥生成失败！\033[0m"
     exit 1
 fi
+echo "密钥生成成功：私钥与公钥已匹配 ✅"
+# ==========================================================
 
 SHORT_ID=$(openssl rand -hex 4)
 UUID=$(cat /proc/sys/kernel/random/uuid)
 PORT=443
 SNI="www.apple.com"
 
-# 5. 官方静默安装 sing-box（无交互）
-bash <(curl -Ls https://sing-box.sagernet.org/install.sh) --latest
-
-# 6. 写入配置
+# 5. 写入配置
 cat > /etc/sing-box/config.json <<EOF
 {
   "log": {"level": "warn"},
@@ -96,7 +86,7 @@ systemctl daemon-reload
 systemctl restart sing-box
 systemctl enable sing-box
 
-# 7. 输出配置
+# 6. 输出配置
 IP=$(curl -s --ipv4 ifconfig.me)
 
 echo -e "\n\033[32m##################################################"
