@@ -2,7 +2,7 @@
 set -e
 
 # ==============================
-# TikTok 一键部署 - 最终稳定版
+# TikTok 一键部署 - 终极无警告版
 # ==============================
 
 apt update -y
@@ -15,7 +15,9 @@ sysctl -w net.ipv6.conf.all.disable_ipv6=1
 sysctl -w net.ipv6.conf.default.disable_ipv6=1
 
 timedatectl set-timezone UTC
-systemctl enable --now chronyd
+
+# 修复：使用正确服务名，无警告
+systemctl enable --now chrony
 
 cat >> /etc/sysctl.conf <<EOF
 net.core.default_qdisc=fq
@@ -33,14 +35,10 @@ vm.swappiness=10
 EOF
 sysctl -p
 
-# ==========================
-# 安装 sing-box（绝对可用）
-# ==========================
+# 安装 sing-box
 curl -Ls https://sing-box.sagernet.org/install.sh | bash -s -- --latest
 
-# ==========================
-# 你写的【完美密钥生成】
-# ==========================
+# 你写的完美密钥生成
 echo "正在本地生成 REALITY 密钥..."
 KEY_PAIR=$(sing-box generate reality-keypair)
 
@@ -58,9 +56,7 @@ UUID=$(cat /proc/sys/kernel/random/uuid)
 PORT=443
 SNI="www.apple.com"
 
-# ==========================
-# 写入配置
-# ==========================
+# 配置
 cat > /etc/sing-box/config.json <<EOF
 {
   "log": {"level": "warn"},
