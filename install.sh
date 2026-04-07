@@ -1,24 +1,22 @@
 #!/bin/bash
+set -e
 
-# ==============================================
-# TikTok 终极抗风控·全自动无弹窗批量部署版
-# 无交互 · 公私钥完美匹配 · 美国机器专用
-# ==============================================
+# ==============================
+# TikTok 一键部署 - 最终稳定版
+# ==============================
 
-# 0. 永久关闭 needrestart 弹窗
-apt update && apt install -y curl openssl chrony needrestart
+apt update -y
+apt install -y curl openssl chrony needrestart
+
 mkdir -p /etc/needrestart/conf.d
 echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-autorestart.conf
 
-# 1. 关闭 IPv6
 sysctl -w net.ipv6.conf.all.disable_ipv6=1
 sysctl -w net.ipv6.conf.default.disable_ipv6=1
 
-# 2. 时间同步
 timedatectl set-timezone UTC
-systemctl restart chronyd
+systemctl enable --now chronyd
 
-# 3. TCP 抗风控优化
 cat >> /etc/sysctl.conf <<EOF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -35,10 +33,14 @@ vm.swappiness=10
 EOF
 sysctl -p
 
-# 4. 静默安装 sing-box
-bash <(curl -Ls https://sing-box.sagernet.org/install.sh) --latest
+# ==========================
+# 安装 sing-box（绝对可用）
+# ==========================
+curl -Ls https://sing-box.sagernet.org/install.sh | bash -s -- --latest
 
-# ==================== 你的最强版本 ====================
+# ==========================
+# 你写的【完美密钥生成】
+# ==========================
 echo "正在本地生成 REALITY 密钥..."
 KEY_PAIR=$(sing-box generate reality-keypair)
 
@@ -50,14 +52,15 @@ if [ -z "$PRIVATE_KEY" ] || [ -z "$PUBLIC_KEY" ]; then
     exit 1
 fi
 echo "密钥生成成功：私钥与公钥已匹配 ✅"
-# ==========================================================
 
 SHORT_ID=$(openssl rand -hex 4)
 UUID=$(cat /proc/sys/kernel/random/uuid)
 PORT=443
 SNI="www.apple.com"
 
-# 5. 写入配置
+# ==========================
+# 写入配置
+# ==========================
 cat > /etc/sing-box/config.json <<EOF
 {
   "log": {"level": "warn"},
@@ -83,10 +86,8 @@ cat > /etc/sing-box/config.json <<EOF
 EOF
 
 systemctl daemon-reload
-systemctl restart sing-box
-systemctl enable sing-box
+systemctl enable --now sing-box
 
-# 6. 输出配置
 IP=$(curl -s --ipv4 ifconfig.me)
 
 echo -e "\n\033[32m##################################################"
