@@ -1,15 +1,14 @@
 #!/bin/bash
 
 # ==============================================
-# TikTok 终极抗风控·批量部署版
+# TikTok 终极抗风控·全自动无弹窗批量部署版
 # 无交互 · 防空Key · 不卡机 · 高稳定
 # ==============================================
 
-# 0. 基础依赖 + 关闭系统弹窗（永不卡住）
+# 0. 永久关闭 needrestart 弹窗（永不卡住）
 apt update && apt install -y curl openssl chrony needrestart
 mkdir -p /etc/needrestart/conf.d
-echo '*' > /etc/needrestart/conf.d/99-autorestart.conf
-echo "\$nrconf{restart} = 'a';" >> /etc/needrestart/conf.d/99-autorestart.conf
+echo "\$nrconf{restart} = 'a';" > /etc/needrestart/conf.d/99-autorestart.conf
 
 # 1. 关闭 IPv6
 sysctl -w net.ipv6.conf.all.disable_ipv6=1
@@ -19,7 +18,7 @@ sysctl -w net.ipv6.conf.default.disable_ipv6=1
 timedatectl set-timezone UTC
 systemctl restart chronyd
 
-# 3. TCP 终极优化
+# 3. TCP 抗风控优化
 cat >> /etc/sysctl.conf <<EOF
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
@@ -104,7 +103,7 @@ echo -e "\n\033[32m##################################################"
 echo -e "###       TikTok 矩阵专用配置 (Nikki/VLESS)     ###"
 echo "##################################################\033[0m"
 
-echo "--- 1. 手机 Nikki YAML 格式 (直接复制到 proxies 列表) ---"
+echo "--- 1. 手机 Nikki YAML 格式 ---"
 echo "- name: \"TK-iPhone-$(echo $IP | cut -d. -f4)\"
   type: vless
   server: $IP
@@ -119,7 +118,5 @@ echo "- name: \"TK-iPhone-$(echo $IP | cut -d. -f4)\"
     short-id: $SHORT_ID
   client-fingerprint: safari"
 
-echo -e "\n--- 2. 测速/通用 VLESS 链接 ---"
+echo -e "\n--- 2. VLESS 链接 ---"
 echo "vless://$UUID@$IP:$PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI&fp=safari&pbk=$PUBLIC_KEY&sid=$SHORT_ID#TK-$IP"
-
-echo -e "\n\033[33m[提示] 已经为您强制开启 Safari 指纹，请确保手机端 App 版本支持 Reality。\033
