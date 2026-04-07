@@ -1,0 +1,35 @@
+cat << 'EOF' > /root/install_rand.sh
+#!/bin/bash
+
+# 1. 自动化环境优化
+sysctl -w net.ipv4.tcp_mtu_probing=1
+echo "net.ipv4.tcp_mtu_probing = 1" >> /etc/sysctl.conf
+
+# 2. 增强版域名池 (挑选了 TikTok 走 CDN 常用的大厂域名)
+domains=("www.microsoft.com" "www.itunes.apple.com" "www.samsung.com" "www.nvidia.com" "www.cloudflare.com" "www.speedtest.net" "www.yahoo.com" "www.amd.com")
+RAND_DOMAIN=${domains[$RANDOM % ${#domains[@]}]}
+
+# 3. 随机 ShortID 生成 (8位十六进制)
+RAND_SHORTID=$(openssl rand -hex 4)
+
+# 4. 自动获取当前服务器配置 (假设路径在 /etc/s-box/sb.json)
+CONF_PATH="/etc/s-box/sb.json"
+
+if [ -f "$CONF_PATH" ]; then
+    # 替换现有配置
+    sed -i "s/\"server_name\": \".*\"/\"server_name\": \"$RAND_DOMAIN\"/g" $CONF_PATH
+    sed -i "s/\"short_id\": \".*\"/\"short_id\": [\"$RAND_SHORTID\"]/g" $CONF_PATH
+    systemctl restart sing-box
+    
+    echo "==============================================="
+    echo "✅ 脚本已成功整合并自动变身！"
+    echo "当前伪装域名: $RAND_DOMAIN"
+    echo "当前 ShortID: $RAND_SHORTID"
+    echo "==============================================="
+else
+    echo "❌ 错误: 未检测到 sing-box 配置文件，请先运行主安装脚本。"
+fi
+EOF
+
+# 执行整合
+bash /root/install_rand.sh
