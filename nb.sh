@@ -1,59 +1,36 @@
 #!/bin/bash
 
-# --- 1. 自动安装基础组件 ---
-for pkg in qrencode jq curl openssl; do
+# =========================================================
+# 1. 基础依赖与环境准备
+# =========================================================
+for pkg in qrencode jq curl openssl wget tar; do
     if ! command -v $pkg >/dev/null 2>&1; then
-        if [ -f /etc/debian_version ]; then
-            apt update -y && apt install -y $pkg > /dev/null 2>&1
-        elif [ -f /etc/redhat-release ]; then
-            yum install -y $pkg > /dev/null 2>&1
-        fi
+        apt update -y && apt install -y $pkg > /dev/null 2>&1
     fi
 done
 
-# --- 2. 路径检测逻辑 ---
-detect_path() {
-    possible_paths=("/etc/s-box/sb.json" "/etc/v2ray-agent/sing-box/conf/config.json")
-    for path in "${possible_paths[@]}"; do
-        if [ -f "$path" ]; then
-            echo "$path"
-            return
-        fi
-    done
-}
+mkdir -p /etc/s-box
+CONF_PATH="/etc/s-box/sb.json"
 
-CONF_PATH=$(detect_path)
-
-# --- 3. 如果没安装，则调用勇哥安装脚本 ---
-if [ -z "$CONF_PATH" ]; then
-    echo "⚠️ 检测到尚未安装 Sing-box，正在为您调取勇哥安装程序..."
-    sleep 2
-    # 调用勇哥官方安装脚本
-    bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/sing-box-yg/main/sb.sh)
-    
-    # 安装完重新检测路径
-    CONF_PATH=$(detect_path)
-    if [ -z "$CONF_PATH" ]; then
-        echo "❌ 安装似乎未成功，请检查上方安装日志。"
-        exit 1
-    fi
-fi
-
-# --- 4. 定义显示函数 (nb) ---
+# =========================================================
+# 2. 核心功能函数：显示二维码与Nikki参数 (nb)
+# =========================================================
 nb_info() {
-    CP=$(detect_path) # 动态获取，防止路径变化
+    clear
+    CP="/etc/s-box/sb.json"
+    [ ! -f "$CP" ] && echo "❌ 错误: 未检测到配置文件" && return
+
     IP=$(curl -s -4 icanhazip.com)
     UUID=$(jq -r '.inbounds[] | select(.type=="vless") | .users[0].uuid // .users[0].id' $CP | head -n 1)
     PORT=$(jq -r '.inbounds[] | select(.type=="vless") | .listen_port // .port' $CP | head -n 1)
     S_NAME=$(jq -r '.inbounds[] | select(.type=="vless") | .tls.server_name // .tls.reality.handshake.server' $CP | head -n 1)
     S_ID=$(jq -r '.inbounds[] | select(.type=="vless") | .tls.reality.short_id[0]' $CP | head -n 1)
-    [ -f "/etc/s-box/public.key" ] && PUB_KEY=$(cat /etc/s-box/public.key) || PUB_KEY="需在配置目录确认"
+    PUB_KEY=$(cat /etc/s-box/public.key 2>/dev/null || echo "需在配置目录确认")
 
     VLESS_LINK="vless://${UUID}@${IP}:${PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${S_NAME}&fp=safari&pbk=${PUB_KEY}&sid=${S_ID}&type=tcp&headerType=none#TK-NB-PureTCP"
 
-    clear
     echo "==============================================="
-    echo "🌟 TikTok 纯 TCP 运营环境 (nb)"
+    echo "🌟 TikTok 纯 TCP 运营环境 (nb 命令)"
     echo "==============================================="
     echo "🚀 VLESS 订阅二维码:"
     echo "$VLESS_LINK" | qrencode -t UTF8
@@ -74,39 +51,116 @@ nb_info() {
     echo "-----------------------------------------------"
 }
 
-# --- 5. 写入永久 nb 命令 ---
+# =========================================================
+# 3. 安装逻辑：如果没装就执行整合的安装流程
+# =========================================================
+if [ ! -f "$CONF_PATH" ]; then
+    echo "🚀 正在开始整合安装流程..."
+    
+    # 提取系统架构
+    arch=$(uname -m)
+    case $arch in
+        x86_64) cpu="amd64" ;;
+        aarch64) cpu="arm64" ;;
+        *) echo "不支持的架构"; exit 1 ;;
+    esac
+
+    # 下载最新 Sing-box 内核
+    sbcore=$(curl -Ls https://github.com/SagerNet/sing-box/releases/latest | grep -oP 'tag/v\K[0-9.]+' | head -n 1)
+    wget -O /etc/s-box/sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v$sbcore/sing-box-$sbcore-linux-$cpu.tar.gz
+    tar xzf /etc/s-box/sing-box.tar.gz -C /etc/s-box
+    mv /etc/s-box/sing-box-$sbcore-linux-$cpu/sing-box /etc/s-box/
+    chmod +x /etc/s-box/sing-box
+    rm -rf /etc/s-box/sing-box.tar.gz /etc/s-box/sing-box-$sbcore-linux-$cpu
+
+    # 生成密钥对与基础变量
+    UUID=$(/etc/s-box/sing-box generate uuid)
+    key_pair=$(/etc/s-box/sing-box generate reality-keypair)
+    private_key=$(echo "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
+    public_key=$(echo "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
+    echo "$public_key" > /etc/s-box/public.key
+    short_id=$(openssl rand -hex 4)
+    RAND_PORT=$(shuf -i 10000-65535 -n 1)
+
+    # 写入整合后的配置文件 (含勇哥拦截规则 + Safari指纹)
+    cat > $CONF_PATH <<EOF
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "::",
+      "listen_port": $RAND_PORT,
+      "users": [ { "uuid": "$UUID", "flow": "xtls-rprx-vision" } ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "reality": {
+          "enabled": true,
+          "handshake": { "server": "www.microsoft.com", "server_port": 443 },
+          "private_key": "$private_key",
+          "short_id": ["$short_id"]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" },
+    { "type": "block", "tag": "block" }
+  ],
+  "route": {
+    "rules": [
+      { "protocol": ["stun"], "outbound": "block" },
+      { "network": "udp", "outbound": "block" }
+    ]
+  }
+}
+EOF
+
+    # 配置系统服务
+    cat > /etc/systemd/system/sing-box.service <<EOF
+[Unit]
+After=network.target nss-lookup.target
+[Service]
+User=root
+WorkingDirectory=/root
+ExecStart=/etc/s-box/sing-box run -c /etc/s-box/sb.json
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable sing-box
+    systemctl start sing-box
+fi
+
+# =========================================================
+# 4. 加固逻辑：每次运行都会执行的动态特征更新
+# =========================================================
+echo "正在执行动态加固与指纹锁定..."
+domains=("www.microsoft.com" "www.lovelive-anime.jp" "www.speedtest.net" "www.yahoo.com" "www.itunes.apple.com" "www.samsung.com" "www.nvidia.com" "www.cloudflare.com")
+RAND_DOMAIN=${domains[$RANDOM % ${#domains[@]}]}
+RAND_SHORTID=$(openssl rand -hex 4)
+
+# 动态换肤
+sed -i "s/\"server_name\": \".*\"/\"server_name\": \"$RAND_DOMAIN\"/g" $CONF_PATH
+sed -i "s/\"short_id\": \".*\"/\"short_id\": [\"$RAND_SHORTID\"]/g" $CONF_PATH
+# 强制Safari指纹对齐
+sed -i 's/"fingerprint": "chrome"/"fingerprint": "safari"/g' $CONF_PATH
+
+systemctl restart sing-box
+
+# =========================================================
+# 5. 永久化 nb 命令与首次展示
+# =========================================================
 if [ ! -f /usr/local/bin/nb ]; then
     cat <<EOF > /usr/local/bin/nb
 #!/bin/bash
-$(declare -f detect_path)
 $(declare -f nb_info)
 nb_info
 EOF
     chmod +x /usr/local/bin/nb
 fi
 
-# --- 6. 执行环境加固逻辑 ---
-echo "正在为您进行 TikTok 运营级环境加固..."
-
-# 随机化特征
-domains=("www.microsoft.com" "www.lovelive-anime.jp" "www.speedtest.net" "www.yahoo.com" "www.itunes.apple.com" "www.samsung.com" "www.nvidia.com" "www.cloudflare.com")
-RAND_DOMAIN=${domains[$RANDOM % ${#domains[@]}]}
-RAND_SHORTID=$(openssl rand -hex 4)
-
-sed -i "s/\"server_name\": \".*\"/\"server_name\": \"$RAND_DOMAIN\"/g" $CONF_PATH
-sed -i "s/\"short_id\": \".*\"/\"short_id\": [\"$RAND_SHORTID\"]/g" $CONF_PATH
-
-# 拦截 WebRTC (STUN)
-if ! grep -q "stun" $CONF_PATH; then
-    sed -i '/"rules": \[/a \        { "protocol": ["stun"], "outbound": "block" },' $CONF_PATH
-fi
-
-# 强制 Safari 指纹
-sed -i 's/"fingerprint": "chrome"/"fingerprint": "safari"/g' $CONF_PATH
-
-# 重启服务
-systemctl restart sing-box
-
-# --- 7. 完成展示 ---
 nb_info
-echo "✅ 全部搞定！下次登录直接输入 nb 即可查看此信息。"
