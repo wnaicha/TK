@@ -9,8 +9,6 @@ iptables -P INPUT ACCEPT && iptables -F
 
 # --- 1. 内核优化 (MTU 探测 + BBR/FQ) ---
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1
-timedatectl set-timezone UTC
-systemctl restart chrony
 sed -i '/net./d' /etc/sysctl.conf
 cat >> /etc/sysctl.conf <<CONF
 net.core.default_qdisc=fq
