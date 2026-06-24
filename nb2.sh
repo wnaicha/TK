@@ -91,7 +91,6 @@ domains=(
   "www.lovelive-anime.jp"    # 经典 REALITY 推荐，长期稳定
   "dl.google.com"            # Google 下载节点，全球可达
   "update.googleapis.com"    # Google API，TLS 1.3
-  "www.microsoft.com"        # 微软，稳定可靠
   "www.nvidia.com"           # 英伟达，TLS 配置好
   "www.adobe.com"            # Adobe CDN，全球节点
   "www.dropbox.com"          # Dropbox，TLS 1.3
