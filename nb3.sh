@@ -357,6 +357,50 @@ nb_info() {
     echo "==============================================="
     echo -e "\033[33mhttp://$IP:8080/$sub_token/proxy.yaml\033[0m"
     echo "==============================================="
+    echo "📋 路由器配置片段 (直接复制到 Nikki/OpenClash)"
+    echo "==============================================="
+    cat <<CLASH
+# ---- proxy-providers ----
+proxy-providers:
+  ${node_name}-provider:
+    type: http
+    url: "http://$IP:8080/$sub_token/proxy.yaml"
+    interval: 3600
+    health-check:
+      enable: true
+      url: http://www.gstatic.com/generate_204
+      interval: 300
+
+# ---- proxy-groups ----
+proxy-groups:
+  - name: $node_name
+    type: select
+    use:
+      - ${node_name}-provider
+
+# ---- rules (按需填入设备IP) ----
+# - SRC-IP-CIDR,192.168.x.x/32,$node_name
+CLASH
+    echo "==============================================="
+
+    # 同时保存到文件，方便以后查阅
+    cat > /etc/s-box/clash-snippet.txt <<SNIPPET
+proxy-providers:
+  ${node_name}-provider:
+    type: http
+    url: "http://$IP:8080/$sub_token/proxy.yaml"
+    interval: 3600
+    health-check:
+      enable: true
+      url: http://www.gstatic.com/generate_204
+      interval: 300
+
+proxy-groups:
+  - name: $node_name
+    type: select
+    use:
+      - ${node_name}-provider
+SNIPPET
 }
 
 rm -f /usr/local/bin/nb
