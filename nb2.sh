@@ -90,15 +90,15 @@ domains=(
   "fivem.net"                # 游戏平台，社区长期验证
   "www.lovelive-anime.jp"    # 经典 REALITY 推荐，长期稳定
   "dl.google.com"            # Google 下载节点，全球可达
-  "update.googleapis.com"    # Google API，TLS 1.3
+  "www.intel.com"    # Google API，TLS 1.3
   "www.nvidia.com"           # 英伟达，TLS 配置好
   "www.adobe.com"            # Adobe CDN，全球节点
   "www.dropbox.com"          # Dropbox，TLS 1.3
   "www.twitch.tv"            # 流媒体平台，大流量掩护好
   "www.linkedin.com"         # 微软旗下，TLS 配置稳定
-  "github.githubassets.com"  # GitHub 静态资源，全球 CDN
+  "www.hp.com"  # GitHub 静态资源，全球 CDN
   "www.paypal.com"           # 金融类，TLS 配置严格规范
-  "cdn.jsdelivr.net"         # 开源 CDN，全球节点多
+  "www.cisco.com"         # 开源 CDN，全球节点多
 )
  
 if [ "$MODE" = "2" ]; then
