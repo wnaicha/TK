@@ -61,10 +61,13 @@ case "$(uname -m)" in
     *) echo "不支持的 CPU 架构: $(uname -m)"; exit 1 ;;
 esac
 
-# --- 3. 端口占用检查 ---
+# --- 3. 停止旧服务 & 端口占用检查 ---
 RAND_PORT=443
+systemctl stop sing-box 2>/dev/null || true
+sleep 1
+# 检查是否还有其他进程占用443（排除sing-box自身）
 if ss -tlnp 2>/dev/null | grep -q ":$RAND_PORT "; then
-    echo "❌ $RAND_PORT 端口已被占用，请先停掉占用进程（如 nginx/caddy）再重试"
+    echo "❌ $RAND_PORT 端口被其他进程占用（如 nginx/caddy），请先停掉再重试"
     exit 1
 fi
 
@@ -106,13 +109,17 @@ echo " 2. 参数还原 (手动输入旧参数)"
 read -r -p "请选择 [1-2]: " MODE
 
 # --- 6. 下载 sing-box 并校验 ---
-if [ ! -x "/etc/s-box/sing-box" ]; then
+INSTALLED_VER=$(/etc/s-box/sing-box version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
+if [ "$INSTALLED_VER" != "$SB_VER" ]; then
+    echo "正在安装 sing-box v$SB_VER..."
     wget -O /etc/s-box/sing-box.tar.gz \
       "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${cpu}.tar.gz"
     tar xzf /etc/s-box/sing-box.tar.gz -C /etc/s-box
     mv /etc/s-box/sing-box-*/sing-box /etc/s-box/sing-box
     chmod +x /etc/s-box/sing-box
     rm -rf /etc/s-box/sing-box.tar.gz /etc/s-box/sing-box-*-linux-*
+else
+    echo "✅ sing-box v$SB_VER 已是最新，跳过下载"
 fi
 /etc/s-box/sing-box version >/dev/null 2>&1 || { echo "❌ sing-box 安装失败"; exit 1; }
 
@@ -124,7 +131,6 @@ domains=(
   "www.hp.com"
   "www.cisco.com"
   "www.philips.com"
-  "www.bosch.com"
   "www.bmw.com"
   "www.toyota.com"
   "www.ikea.com"
@@ -240,7 +246,7 @@ gen_sub() {
 
     cat > "/etc/s-box/sub/$token/proxy.yaml" <<YAML
 proxies:
-  - name: "$name_val"
+  - name: "$name_val-$IP"
     type: vless
     server: $IP
     port: $p
@@ -297,7 +303,7 @@ nb_info() {
     pb=$(cat /etc/s-box/public.key)
     node_name=$(cat /etc/s-box/node_name 2>/dev/null || echo "TK-node")
     sub_token=$(cat /etc/s-box/sub_token 2>/dev/null || echo "")
-    link="vless://$u@$IP:$p?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sn&fp=safari&pbk=$pb&sid=$sid&type=tcp&headerType=none#$node_name"
+    link="vless://$u@$IP:$p?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$sn&fp=safari&pbk=$pb&sid=$sid&type=tcp&headerType=none#$node_name-$IP"
 
     # BBR / 系统状态
     cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -332,10 +338,10 @@ nb_info() {
     printf "📉 重 传 率   : \033[33m%s%%\033[0m  " "$rate"
     printf "%b\n" "$level"
     echo "==============================================="
-    printf "📛 节 点 名   : \033[36m%s\033[0m\n" "$node_name"
+    printf "📛 节 点 名   : \033[36m%s\033[0m\n" "$node_name-$IP"
     echo "📋 Nikki / Clash 完整参数"
     echo "==============================================="
-    printf "  - name: \"%s\"\n" "$node_name"
+    printf "  - name: \"%s\"\n" "$node_name-$IP"
     printf "    type: vless\n"
     printf "    server: %s\n" "$IP"
     printf "    port: %s\n" "$p"
@@ -425,7 +431,6 @@ domains=(
   "www.hp.com"
   "www.cisco.com"
   "www.philips.com"
-  "www.bosch.com"
   "www.bmw.com"
   "www.toyota.com"
   "www.ikea.com"
@@ -469,7 +474,7 @@ if /etc/s-box/sing-box check -c "$CONF" >/dev/null 2>&1; then
     if [ -n "$TOKEN" ] && [ -n "$IP" ]; then
         cat > "/etc/s-box/sub/$TOKEN/proxy.yaml" <<YAML
 proxies:
-  - name: "$NODE"
+  - name: "$NODE-$IP"
     type: vless
     server: $IP
     port: $PORT
