@@ -273,7 +273,8 @@ Description=sing-box subscription HTTP server
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/python3 -m http.server $SUB_PORT --directory /etc/s-box/sub
+WorkingDirectory=/etc/s-box/sub
+ExecStart=/usr/bin/python3 -m http.server $SUB_PORT
 Restart=always
 RestartSec=3
 
@@ -373,6 +374,7 @@ proxy-providers:
     type: http
     url: "http://$IP:8080/$sub_token/proxy.yaml"
     interval: 3600
+    proxy: DIRECT
     health-check:
       enable: true
       url: http://www.gstatic.com/generate_204
@@ -397,6 +399,7 @@ proxy-providers:
     type: http
     url: "http://$IP:8080/$sub_token/proxy.yaml"
     interval: 3600
+    proxy: DIRECT
     health-check:
       enable: true
       url: http://www.gstatic.com/generate_204
