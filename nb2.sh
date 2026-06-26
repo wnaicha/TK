@@ -85,20 +85,35 @@ fi
  
 # --- 5. 生成 / 还原参数 ---
 domains=(
-  "addons.mozilla.org"       # Mozilla CDN，TLS 1.3，全球可达
-  "www.tesla.com"            # 大厂低频，TLS 配置干净
-  "fivem.net"                # 游戏平台，社区长期验证
-  "www.lovelive-anime.jp"    # 经典 REALITY 推荐，长期稳定
-  "dl.google.com"            # Google 下载节点，全球可达
-  "www.intel.com"    # Google API，TLS 1.3
-  "www.nvidia.com"           # 英伟达，TLS 配置好
-  "www.adobe.com"            # Adobe CDN，全球节点
-  "www.dropbox.com"          # Dropbox，TLS 1.3
-  "www.twitch.tv"            # 流媒体平台，大流量掩护好
-  "www.linkedin.com"         # 微软旗下，TLS 配置稳定
-  "www.hp.com"  # GitHub 静态资源，全球 CDN
-  "www.paypal.com"           # 金融类，TLS 配置严格规范
-  "www.cisco.com"         # 开源 CDN，全球节点多
+  # 科技硬件 - 在华有实体业务，域名长期稳定
+  "www.intel.com"            # 英特尔，中国可访问，TLS 1.3
+  "www.nvidia.com"           # 英伟达，中国可访问
+  "www.hp.com"               # 惠普，中国有官网
+  "www.cisco.com"            # 思科，企业级 TLS 配置
+  "www.philips.com"          # 飞利浦，中国可访问
+  "www.bosch.com"            # 博世，中国可访问
+ 
+  # 汽车品牌 - 大流量主域，TLS 配置稳定
+  "www.bmw.com"              # 宝马，中国热门品牌
+  "www.toyota.com"           # 丰田，中国可访问
+  "www.tesla.com"            # 特斯拉，中国有工厂
+ 
+  # 消费电子
+  "www.sony.com"             # 索尼，中国可访问
+  "www.lovelive-anime.jp"    # 经典 REALITY 推荐，日本域名中国可访
+ 
+  # 企业软件 - TLS 配置最严格规范
+  "www.sap.com"              # SAP，企业级
+  "www.oracle.com"           # 甲骨文，中国可访问
+  "www.adobe.com"            # Adobe，中国有官网
+ 
+  # 金融 - 证书从不过期，TLS 规范
+  "www.visa.com"             # Visa，中国可访问
+  "www.mastercard.com"       # 万事达，中国可访问
+  "www.paypal.com"           # PayPal，中国可访问
+ 
+  # 零售
+  "www.ikea.com"             # 宜家，中国有门店，域名稳定
 )
  
 if [ "$MODE" = "2" ]; then
@@ -108,7 +123,11 @@ if [ "$MODE" = "2" ]; then
     read -r -p "输入 Short-ID: "    short_id
     read -r -p "输入伪装域名: "      RAND_DOMAIN
 else
-    RAND_DOMAIN=${domains[$RANDOM % ${#domains[@]}]}
+    # 用 /dev/urandom 替代 $RANDOM，避免100台同时部署时撞同一个域名
+    IDX=$(od -An -tu4 -N4 /dev/urandom | tr -d ' ' | awk -v n="${#domains[@]}" '{print $1 % n}')
+    RAND_DOMAIN=${domains[$IDX]}
+    # 记录当前域名索引，供轮询脚本使用
+    echo "$IDX" > /etc/s-box/domain_idx
     uuid=$(/etc/s-box/sing-box generate uuid)
     short_id=$(/etc/s-box/sing-box generate rand --hex 4)
     /etc/s-box/sing-box generate reality-keypair > /tmp/sb_keys.txt
@@ -264,6 +283,59 @@ NBEOF
 declare -f nb_info >> /usr/local/bin/nb
 echo "nb_info" >> /usr/local/bin/nb
 chmod +x /usr/local/bin/nb
+ 
+# --- 9. 域名轮询脚本 (rotate-domain) ---
+# 域名列表与安装脚本保持同步，轮询时按顺序切换
+cat > /usr/local/bin/rotate-domain <<'ROTEOF'
+#!/bin/bash
+CONF="/etc/s-box/sb.json"
+IDX_FILE="/etc/s-box/domain_idx"
+ 
+domains=(
+  "www.intel.com"
+  "www.nvidia.com"
+  "www.hp.com"
+  "www.cisco.com"
+  "www.philips.com"
+  "www.bosch.com"
+  "www.bmw.com"
+  "www.toyota.com"
+  "www.tesla.com"
+  "www.sony.com"
+  "www.lovelive-anime.jp"
+  "www.sap.com"
+  "www.oracle.com"
+  "www.adobe.com"
+  "www.visa.com"
+  "www.mastercard.com"
+  "www.paypal.com"
+  "www.ikea.com"
+)
+ 
+# 读取上次索引，顺序切换到下一个
+cur=$(cat "$IDX_FILE" 2>/dev/null || echo "0")
+next=$(( (cur + 1) % ${#domains[@]} ))
+NEW_DOMAIN=${domains[$next]}
+ 
+# 用 jq 只更新域名字段，UUID/密钥/short_id 保持不动
+jq --arg d "$NEW_DOMAIN" '
+  .inbounds[0].tls.server_name = $d |
+  .inbounds[0].tls.reality.handshake.server = $d
+' "$CONF" > /tmp/sb_new.json && mv /tmp/sb_new.json "$CONF"
+ 
+# 校验后重启
+if /etc/s-box/sing-box check -c "$CONF" >/dev/null 2>&1; then
+    systemctl restart sing-box
+    echo "$next" > "$IDX_FILE"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') 域名已切换 → $NEW_DOMAIN" >> /var/log/domain-rotate.log
+    echo "✅ 已切换到: $NEW_DOMAIN"
+else
+    echo "❌ 配置校验失败，已回滚，域名未切换"
+fi
+ROTEOF
+chmod +x /usr/local/bin/rotate-domain
+ 
+echo "✅ 手动切换域名：执行 rotate-domain 即可，UUID/密钥不变"
  
 # 安装完毕输出
 sleep 1
