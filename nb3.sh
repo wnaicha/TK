@@ -245,6 +245,7 @@ proxies:
     server: $IP
     port: $p
     uuid: $u
+    network: tcp
     udp: false
     tls: true
     flow: xtls-rprx-vision
