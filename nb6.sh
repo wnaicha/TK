@@ -18,7 +18,7 @@ SUB_YAML_ROOT="/etc/s-box/sub"
 # ⚠️⚠️ 固定盐(私钥)：token 的安全全靠它，务必改成你自己的一串随机字符，
 #       并且【每次重装都用同一份脚本(盐不变)】，否则算出的 token 会变。
 #       同一套矩阵所有服务器用同一个盐即可；不要外泄。
-SUB_SALT="CHANGE-ME-请改成你自己的随机密码-abc123XYZ"
+SUB_SALT="CHANGE-ME-1213"
 
 # --- 0. 前置检查与依赖 ---
 [ "$(id -u)" != "0" ] && { echo "请用 root 运行"; exit 1; }
