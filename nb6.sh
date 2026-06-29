@@ -4,6 +4,7 @@ set -e
 # ===============================================================
 # TikTok 矩阵环境 - VLESS + REALITY 一体版 V4.4
 # = V4.3(固定Token) + 域名测速工具(test-domain / 智能rotate-domain)
+#   + 安装时即测速、手动选伪装域名(回车=自动选最快)
 # 一条命令搞定：装节点 + 固定Token + 测速选域名
 # 适配 sing-box 1.13.13 | Debian / Ubuntu
 # ===============================================================
@@ -152,8 +153,40 @@ if [ "$MODE" = "2" ]; then
     read -r -p "Short-ID: " short_id
     read -r -p "伪装SNI域名: " RAND_DOMAIN
 else
-    IDX=$(od -An -tu4 -N4 /dev/urandom | tr -d ' ' | awk -v n="${#domains[@]}" '{print $1 % n}')
+    # 安装时测速 + 手动选伪装域名（回车=自动选最快）
+    _test_one(){
+      local d="$1" best="" t k
+      for k in 1 2; do
+        t=$(curl -o /dev/null -s -m 5 -w "%{time_appconnect}" "https://$d" 2>/dev/null)
+        { [ -z "$t" ] || [ "$t" = "0.000000" ]; } && continue
+        if [ -z "$best" ] || awk "BEGIN{exit !($t<$best)}"; then best="$t"; fi
+      done
+      echo "$best"
+    }
+    echo "-----------------------------------------------"
+    echo "正在测速选伪装域名（<0.1优/0.1-0.3中/>0.3差）..."
+    _bi=-1; _bt=""
+    for i in "${!domains[@]}"; do
+      t=$(_test_one "${domains[$i]}")
+      if [ -z "$t" ]; then
+        printf " %2d) %-18s \033[31m超时\033[0m\n" "$((i+1))" "${domains[$i]}"
+      else
+        c="\033[33m"; awk "BEGIN{exit !($t<0.1)}" && c="\033[32m"; awk "BEGIN{exit !($t>0.3)}" && c="\033[31m"
+        printf " %2d) %-18s ${c}%ss\033[0m\n" "$((i+1))" "${domains[$i]}" "$t"
+        if [ -z "$_bt" ] || awk "BEGIN{exit !($t<$_bt)}"; then _bt="$t"; _bi="$i"; fi
+      fi
+    done
+    [ "$_bi" -lt 0 ] && _bi=0
+    echo "-----------------------------------------------"
+    read -r -p "输入数字选择域名 (回车=自动选最快: ${domains[$_bi]}): " pick
+    if [ -z "$pick" ]; then
+      IDX=$_bi
+    else
+      case "$pick" in *[!0-9]*) IDX=$_bi;; *) IDX=$((pick-1));; esac
+      { [ "$IDX" -lt 0 ] || [ "$IDX" -ge "${#domains[@]}" ]; } && IDX=$_bi
+    fi
     RAND_DOMAIN=${domains[$IDX]}
+    echo "→ 使用伪装域名: $RAND_DOMAIN"
     echo "$IDX" > /etc/s-box/domain_idx
     uuid=$(/etc/s-box/sing-box generate uuid)
     short_id=$(/etc/s-box/sing-box generate rand --hex 4)
