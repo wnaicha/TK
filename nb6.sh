@@ -2,11 +2,9 @@
 set -e
 
 # ===============================================================
-# TikTok 矩阵环境 - VLESS + REALITY 固定Token版 V4.3
-# 新增：Token = sha256(名称 + 公网IP + 私有盐) 派生，固定不变
-#       → 重装系统后只要 名称/IP/盐 不变，订阅Token就一样，
-#         路由器订阅链接无需改动
-# 默认 HTTP 订阅，兼容 Mihomo / OpenClash / Nikki
+# TikTok 矩阵环境 - VLESS + REALITY 一体版 V4.4
+# = V4.3(固定Token) + 域名测速工具(test-domain / 智能rotate-domain)
+# 一条命令搞定：装节点 + 固定Token + 测速选域名
 # 适配 sing-box 1.13.13 | Debian / Ubuntu
 # ===============================================================
 
@@ -18,7 +16,7 @@ SUB_YAML_ROOT="/etc/s-box/sub"
 # ⚠️⚠️ 固定盐(私钥)：token 的安全全靠它，务必改成你自己的一串随机字符，
 #       并且【每次重装都用同一份脚本(盐不变)】，否则算出的 token 会变。
 #       同一套矩阵所有服务器用同一个盐即可；不要外泄。
-SUB_SALT="CHANGE-ME-1213"
+SUB_SALT="CHANGE-ME-请改成你自己的随机密码-1213"
 
 # --- 0. 前置检查与依赖 ---
 [ "$(id -u)" != "0" ] && { echo "请用 root 运行"; exit 1; }
@@ -28,11 +26,9 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y jq socat curl wget openssl tar chrony qrencode iproute2 python3 iptables-persistent
 
-# 时间同步(REALITY强依赖时间)
 systemctl enable --now chrony 2>/dev/null || systemctl enable --now chronyd 2>/dev/null || true
 timedatectl set-ntp true 2>/dev/null || true
 
-# 防火墙持久放行端口
 iptables -I INPUT -p tcp --dport 443 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport $SUB_PORT -j ACCEPT 2>/dev/null || true
 netfilter-persistent save 2>/dev/null || true
@@ -86,7 +82,7 @@ fi
 
 # --- 4. 节点名称 + 固定Token(名称+IP+盐 派生) ---
 echo "==============================================="
-echo "TikTok矩阵 VLESS-REALITY 一键脚本 V4.3 (固定Token版)"
+echo "TikTok矩阵 VLESS-REALITY 一键脚本 V4.4 (一体版)"
 echo "==============================================="
 
 OLD_NAME=$(cat /etc/s-box/node_name 2>/dev/null || echo "")
@@ -99,7 +95,6 @@ else
 fi
 echo "$NODE_NAME" > /etc/s-box/node_name
 
-# 取公网IP（用于派生固定Token）
 IP_FOR_TOKEN=$(curl -s4m5 https://api.ipify.org 2>/dev/null \
   || curl -s4m5 https://icanhazip.com 2>/dev/null \
   || curl -s4m5 https://ifconfig.me 2>/dev/null \
@@ -107,7 +102,6 @@ IP_FOR_TOKEN=$(curl -s4m5 https://api.ipify.org 2>/dev/null \
 IP_FOR_TOKEN=$(echo "$IP_FOR_TOKEN" | tr -d '[:space:]')
 [ -z "$IP_FOR_TOKEN" ] && { echo "❌ 取不到公网IP，无法生成固定Token"; exit 1; }
 
-# 固定Token = sha256(名称-IP-盐) 取前36位hex
 SUB_TOKEN=$(echo -n "${NODE_NAME}-${IP_FOR_TOKEN}-${SUB_SALT}" | sha256sum | awk '{print substr($1,1,36)}')
 echo "$SUB_TOKEN" > /etc/s-box/sub_token
 echo "✅ 固定Token(名称+IP+盐派生): ${SUB_TOKEN:0:8}********  (重装/名称IP不变则恒定)"
@@ -133,22 +127,22 @@ else
 fi
 /etc/s-box/sing-box version >/dev/null 2>&1 || { echo "❌ sing-box二进制损坏"; exit 1; }
 
-# --- 7. 纯裸域名池（无任何 markdown / 括号符号） ---
+# --- 7. 纯裸域名池 ---
 domains=(
   "www.intel.com"
-  "www.nvidia.com"
-  "www.amd.com"
   "www.hp.com"
-  "www.samsung.com"
+  "www.dell.com"
+  "www.lenovo.com"
+  "www.nvidia.com"
+  "www.logitech.com"
   "www.philips.com"
+  "www.samsung.com"
+  "www.sony.com"
+  "www.motorola.com"
   "www.bmw.com"
   "www.toyota.com"
   "www.ikea.com"
-  "www.sony.com"
-  "www.logitech.com"
-  "www.motorola.com"
-  "www.lenovo.com"
-  "www.dell.com"
+  "www.amd.com"
 )
 
 if [ "$MODE" = "2" ]; then
@@ -170,7 +164,7 @@ else
 fi
 echo "$public_key" > /etc/s-box/public.key
 
-# --- 8. sing-box配置（无 multiplex，避免 vision flow 冲突） ---
+# --- 8. sing-box配置（无 multiplex） ---
 cat > "$CONF_PATH" <<JSON
 {
   "log": { "level": "warn" },
@@ -229,7 +223,7 @@ systemctl daemon-reload
 systemctl enable sing-box
 systemctl restart sing-box
 
-# --- 10. Python HTTP 订阅服务（WorkingDirectory，兼容老版本 Python） ---
+# --- 10. Python HTTP 订阅服务 ---
 cat > /etc/systemd/system/sb-sub.service <<EOF
 [Unit]
 Description=sing-box subscription plain HTTP server
@@ -248,7 +242,7 @@ systemctl daemon-reload
 systemctl enable sb-sub
 systemctl restart sb-sub
 
-# --- 11. 生成订阅文件函数 gen_sub（HTTP链接） ---
+# --- 11. 生成订阅文件 gen_sub ---
 gen_sub() {
     local CP="$CONF_PATH"
     local IP
@@ -257,7 +251,7 @@ gen_sub() {
       || curl -s4m5 https://ifconfig.me 2>/dev/null \
       || hostname -I | awk '{print $1}')
     IP=$(echo "$IP" | tr -d '[:space:]')
-    [ -z "$IP" ] && { echo "⚠️ 无法获取公网IP，请手动填写节点IP"; return 1; }
+    [ -z "$IP" ] && { echo "⚠️ 无法获取公网IP"; return 1; }
 
     local u p sn sid pb name_val token
     u=$(jq -r '.inbounds[0].users[0].uuid' "$CP")
@@ -289,7 +283,7 @@ YAML
 }
 gen_sub
 
-# --- 12. nb 快捷查询命令（输出HTTP订阅链接） ---
+# --- 12. nb 快捷查询命令 ---
 nb_info() {
     clear
     CP="/etc/s-box/sb.json"
@@ -314,7 +308,6 @@ nb_info() {
     qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     mod_status=$(lsmod | grep -q bbr && echo -e "\033[32m已加载\033[0m" || echo -e "\033[31m未加载\033[0m")
     up_time=$(uptime -p | sed 's/up //')
-    boot_time=$(who -b | awk '{print $3,$4}')
 
     snmp_file="/proc/net/snmp"
     out_idx=$(awk '/Tcp:/ {for(i=1;i<=NF;i++) if($i=="OutSegs") print i}' "$snmp_file" | head -n1)
@@ -323,24 +316,13 @@ nb_info() {
     out_segs=$(echo "$snmp_data" | awk "{print \$$out_idx}")
     retr_segs=$(echo "$snmp_data" | awk "{print \$$retr_idx}")
     rate=$(awk "BEGIN {if($out_segs==0) print \"0.0000\"; else printf \"%.4f\", ($retr_segs/$out_segs)*100}")
-    rate_int=$(awk "BEGIN {if($out_segs==0) print 0; else printf \"%d\", ($retr_segs/$out_segs)*1000000}")
-    if   [ "$rate_int" -lt 5000  ]; then level="\033[42;37m ★ 极佳 (健康) \033[0m"
-    elif [ "$rate_int" -lt 15000 ]; then level="\033[44;37m ★ 良好 (亚健康) \033[0m"
-    elif [ "$rate_int" -lt 30000 ]; then level="\033[43;30m ⚡ 警告 (线路波动) \033[0m"
-    else                                  level="\033[41;37m ❌ 危险 (限流风险) \033[0m"
-    fi
 
     echo "==============================================="
-    echo "🖥 系统BBR与线路状态"
-    echo "==============================================="
-    printf "运行时间: \033[36m%s\033[0m\n" "$up_time"
-    printf "系统启动: \033[36m%s\033[0m\n" "$boot_time"
-    printf "拥塞算法: \033[32m%s\033[0m\n" "$cc"
-    printf "队列算法: \033[32m%s\033[0m\n" "$qdisc"
-    printf "BBR内核模块: %b\n" "$mod_status"
-    printf "TCP重传率: \033[33m%s%%\033[0m %b\n" "$rate" "$level"
-    echo "==============================================="
     printf "节点名称: \033[36m%s-$IP\033[0m\n" "$node_name"
+    printf "拥塞算法: \033[32m%s\033[0m  队列: \033[32m%s\033[0m  BBR模块: %b\n" "$cc" "$qdisc" "$mod_status"
+    printf "运行时间: %s   累计重传率: \033[33m%s%%\033[0m\n" "$up_time" "$rate"
+    echo "📋 当前伪装域名: $sn"
+    echo "==============================================="
     echo "📋 Clash完整节点配置"
     echo "==============================================="
     printf "  - name: \"%s-$IP\"\n" "$node_name"
@@ -406,7 +388,6 @@ proxy-groups:
       - ${node_name}-provider
 SNIPPET
 }
-# 注册nb命令
 rm -f /usr/local/bin/nb
 cat <<'NBINIT' > /usr/local/bin/nb
 #!/bin/bash
@@ -415,50 +396,53 @@ declare -f nb_info >> /usr/local/bin/nb
 echo "nb_info" >> /usr/local/bin/nb
 chmod +x /usr/local/bin/nb
 
-# --- 13. rotate-domain 域名轮换工具（纯裸域名，同步更新订阅） ---
-cat > /usr/local/bin/rotate-domain <<'ROT'
+# --- 13a. test-domain：测全部域名 → 数字手动选 → 应用+同步 ---
+cat > /usr/local/bin/test-domain <<'TDEOF'
 #!/bin/bash
 CONF="/etc/s-box/sb.json"
-IDX_FILE="/etc/s-box/domain_idx"
+SB="/etc/s-box/sing-box"
+G='\033[32m'; Y='\033[33m'; R='\033[31m'; C='\033[36m'; N='\033[0m'
 domains=(
-  "www.intel.com"
-  "www.nvidia.com"
-  "www.amd.com"
-  "www.hp.com"
-  "www.samsung.com"
-  "www.philips.com"
-  "www.bmw.com"
-  "www.toyota.com"
-  "www.ikea.com"
-  "www.sony.com"
-  "www.logitech.com"
-  "www.motorola.com"
-  "www.lenovo.com"
-  "www.dell.com"
+  "www.intel.com" "www.hp.com" "www.dell.com" "www.lenovo.com"
+  "www.nvidia.com" "www.logitech.com" "www.philips.com" "www.samsung.com"
+  "www.sony.com" "www.motorola.com" "www.bmw.com" "www.toyota.com"
+  "www.ikea.com" "www.amd.com"
 )
-cur=$(cat "$IDX_FILE" 2>/dev/null || echo 0)
-next=$(( (cur + 1) % ${#domains[@]} ))
-NEW_DOM=${domains[$next]}
+test_one(){
+  local d="$1" best="" t k
+  for k in 1 2; do
+    t=$(curl -o /dev/null -s -m 5 -w "%{time_appconnect}" "https://$d" 2>/dev/null)
+    { [ -z "$t" ] || [ "$t" = "0.000000" ]; } && continue
+    if [ -z "$best" ] || awk "BEGIN{exit !($t<$best)}"; then best="$t"; fi
+  done
+  echo "$best"
+}
+echo "==============================================="
+echo "  测试 ${#domains[@]} 个伪装域名握手延迟 (<0.1优/0.1-0.3中/>0.3差)"
+echo "==============================================="
+for i in "${!domains[@]}"; do
+  d="${domains[$i]}"; t=$(test_one "$d")
+  if [ -z "$t" ]; then
+    printf " ${R}%2d)${N} %-18s ${R}超时/失败${N}\n" "$((i+1))" "$d"
+  else
+    c="$Y"; awk "BEGIN{exit !($t<0.1)}" && c="$G"; awk "BEGIN{exit !($t>0.3)}" && c="$R"
+    printf " ${C}%2d)${N} %-18s ${c}%ss${N}\n" "$((i+1))" "$d" "$t"
+  fi
+done
+echo "-----------------------------------------------"
+read -r -p "输入数字选择域名 [1-${#domains[@]}]: " n
+case "$n" in *[!0-9]*|"") echo "❌ 请输入数字"; exit 1;; esac
+if [ "$n" -lt 1 ] || [ "$n" -gt "${#domains[@]}" ]; then echo "❌ 超出范围"; exit 1; fi
+SEL="${domains[$((n-1))]}"; echo "→ 选择: $SEL，应用中..."
 cp "$CONF" "${CONF}.bak"
-jq --arg d "$NEW_DOM" '
-  .inbounds[0].tls.server_name=$d |
-  .inbounds[0].tls.reality.handshake.server=$d
-' "$CONF" > /tmp/sb.tmp && mv /tmp/sb.tmp "$CONF"
-if /etc/s-box/sing-box check -c "$CONF" >/dev/null 2>&1; then
-    systemctl restart sing-box
-    echo "$next" > "$IDX_FILE"
-    echo "$(date '+%Y-%m-%d %H:%M:%S') 切换SNI域名:$NEW_DOM" >> /var/log/domain-rotate.log
-    echo "✅ 切换完成：$NEW_DOM"
-    TOKEN=$(cat /etc/s-box/sub_token)
-    NODE=$(cat /etc/s-box/node_name)
-    PB=$(cat /etc/s-box/public.key)
-    IP=$(curl -s4m5 https://api.ipify.org 2>/dev/null || curl -s4m5 https://icanhazip.com 2>/dev/null)
-    IP=$(echo "$IP" | tr -d '[:space:]')
-    UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/s-box/sb.json)
-    PORT=$(jq -r '.inbounds[0].listen_port' /etc/s-box/sb.json)
-    SID=$(jq -r '.inbounds[0].tls.reality.short_id[0]' /etc/s-box/sb.json)
-    if [ -n "$TOKEN" ] && [ -n "$IP" ]; then
-        cat > "/etc/s-box/sub/$TOKEN/proxy.yaml" <<YAML
+jq --arg d "$SEL" '.inbounds[0].tls.server_name=$d | .inbounds[0].tls.reality.handshake.server=$d' "$CONF" > /tmp/sb.tmp && mv /tmp/sb.tmp "$CONF"
+if $SB check -c "$CONF" >/dev/null 2>&1; then
+  systemctl restart sing-box
+  echo "$((n-1))" > /etc/s-box/domain_idx
+  TOKEN=$(cat /etc/s-box/sub_token); NODE=$(cat /etc/s-box/node_name); PB=$(cat /etc/s-box/public.key)
+  IP=$(curl -s4m5 https://api.ipify.org 2>/dev/null || curl -s4m5 https://icanhazip.com 2>/dev/null); IP=$(echo "$IP" | tr -d '[:space:]')
+  UUID=$(jq -r '.inbounds[0].users[0].uuid' "$CONF"); PORT=$(jq -r '.inbounds[0].listen_port' "$CONF"); SID=$(jq -r '.inbounds[0].tls.reality.short_id[0]' "$CONF")
+  [ -n "$TOKEN" ] && [ -n "$IP" ] && cat > "/etc/s-box/sub/$TOKEN/proxy.yaml" <<YAML
 proxies:
   - name: "$NODE-$IP"
     type: vless
@@ -469,25 +453,85 @@ proxies:
     udp: false
     tls: true
     flow: xtls-rprx-vision
-    servername: $NEW_DOM
+    servername: $SEL
     reality-opts:
       public-key: $PB
       short-id: $SID
     client-fingerprint: safari
 YAML
-        echo "✅ 订阅文件同步更新完毕"
-    fi
+  echo "✅ 已切换到 $SEL，sing-box已重启，订阅已同步。客户端刷新即可。"
 else
-    mv "${CONF}.bak" "$CONF"
-    echo "❌ 配置校验失败，自动回滚原域名"
+  mv "${CONF}.bak" "$CONF"; echo "❌ 配置校验失败，已回滚"
 fi
-ROT
+TDEOF
+chmod +x /usr/local/bin/test-domain
+
+# --- 13b. rotate-domain：测速后自动切到最快域名 ---
+cat > /usr/local/bin/rotate-domain <<'RDEOF'
+#!/bin/bash
+CONF="/etc/s-box/sb.json"
+SB="/etc/s-box/sing-box"
+domains=(
+  "www.intel.com" "www.hp.com" "www.dell.com" "www.lenovo.com"
+  "www.nvidia.com" "www.logitech.com" "www.philips.com" "www.samsung.com"
+  "www.sony.com" "www.motorola.com" "www.bmw.com" "www.toyota.com"
+  "www.ikea.com" "www.amd.com"
+)
+test_one(){
+  local d="$1" best="" t k
+  for k in 1 2; do
+    t=$(curl -o /dev/null -s -m 5 -w "%{time_appconnect}" "https://$d" 2>/dev/null)
+    { [ -z "$t" ] || [ "$t" = "0.000000" ]; } && continue
+    if [ -z "$best" ] || awk "BEGIN{exit !($t<$best)}"; then best="$t"; fi
+  done
+  echo "$best"
+}
+echo "测速选优中（约十几秒）..."
+best_i=-1; best_t=""
+for i in "${!domains[@]}"; do
+  t=$(test_one "${domains[$i]}"); [ -z "$t" ] && continue
+  if [ -z "$best_t" ] || awk "BEGIN{exit !($t<$best_t)}"; then best_t="$t"; best_i="$i"; fi
+done
+if [ "$best_i" -lt 0 ]; then echo "❌ 所有域名都测不通，未切换"; exit 1; fi
+SEL="${domains[$best_i]}"; echo "✅ 最优域名: $SEL  (握手 ${best_t}s)"
+cp "$CONF" "${CONF}.bak"
+jq --arg d "$SEL" '.inbounds[0].tls.server_name=$d | .inbounds[0].tls.reality.handshake.server=$d' "$CONF" > /tmp/sb.tmp && mv /tmp/sb.tmp "$CONF"
+if $SB check -c "$CONF" >/dev/null 2>&1; then
+  systemctl restart sing-box
+  echo "$best_i" > /etc/s-box/domain_idx
+  echo "$(date '+%Y-%m-%d %H:%M:%S') 自动切到最快域名:$SEL (${best_t}s)" >> /var/log/domain-rotate.log
+  TOKEN=$(cat /etc/s-box/sub_token); NODE=$(cat /etc/s-box/node_name); PB=$(cat /etc/s-box/public.key)
+  IP=$(curl -s4m5 https://api.ipify.org 2>/dev/null || curl -s4m5 https://icanhazip.com 2>/dev/null); IP=$(echo "$IP" | tr -d '[:space:]')
+  UUID=$(jq -r '.inbounds[0].users[0].uuid' "$CONF"); PORT=$(jq -r '.inbounds[0].listen_port' "$CONF"); SID=$(jq -r '.inbounds[0].tls.reality.short_id[0]' "$CONF")
+  [ -n "$TOKEN" ] && [ -n "$IP" ] && cat > "/etc/s-box/sub/$TOKEN/proxy.yaml" <<YAML
+proxies:
+  - name: "$NODE-$IP"
+    type: vless
+    server: $IP
+    port: $PORT
+    uuid: $UUID
+    network: tcp
+    udp: false
+    tls: true
+    flow: xtls-rprx-vision
+    servername: $SEL
+    reality-opts:
+      public-key: $PB
+      short-id: $SID
+    client-fingerprint: safari
+YAML
+  echo "✅ 已切换并同步订阅。客户端刷新即可。"
+else
+  mv "${CONF}.bak" "$CONF"; echo "❌ 配置校验失败，已回滚"
+fi
+RDEOF
 chmod +x /usr/local/bin/rotate-domain
 
 # 安装完成提示
 echo -e "\n===================== 安装完成 ====================="
-echo "1. 查看节点信息/订阅链接/二维码：执行  nb"
-echo "2. 轮换REALITY伪装SNI域名：       rotate-domain"
-echo "3. 查看代理实时日志：             journalctl -u sing-box -f"
+echo "1. 查看节点信息/订阅/二维码： nb"
+echo "2. 测全部域名延迟、手动选最优： test-domain"
+echo "3. 自动切到握手最快的域名：     rotate-domain"
+echo "4. 查看实时日志：               journalctl -u sing-box -f"
 echo "===================================================="
 /usr/local/bin/nb
