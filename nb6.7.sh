@@ -2,12 +2,16 @@
 set -e
 
 # ===============================================================
-# TikTok 矩阵环境 - VLESS + Vision + TLS (自有域名) V5.0
+# TikTok 矩阵环境 - VLESS + Vision + TLS (自有域名) V5.1
 #  - 用你自己的子域名 + Let's Encrypt 证书（sing-box内置ACME，自动续期）
-#  - 不再借大站做Reality，没有"域名过段时间就坏"的问题
-#  - 域名/邮箱/UUID 全部持久化：重装后客户端零改动
+#  - 支持自定义监听端口（不再写死443，应对443被墙/被封场景）
+#  - 域名/邮箱/UUID/端口 全部持久化：重装后客户端零改动
 #  - 保留：禁UDP / BBR / 固定Token / 节点名带IP / HTTP订阅
 # 适配 sing-box 1.13.13 | Debian / Ubuntu
+#
+# 注意：Let's Encrypt 的 HTTP-01 验证依然需要 80 端口可达，
+# 这个和你的代理监听端口是两回事，不能用来当代理端口，
+# 也不需要对外暴露代理流量，只在签证书时短暂使用。
 # ===============================================================
 
 SB_VER="1.13.13"
@@ -28,13 +32,6 @@ apt-get install -y jq socat curl wget openssl tar chrony qrencode iproute2 pytho
 
 systemctl enable --now chrony 2>/dev/null || systemctl enable --now chronyd 2>/dev/null || true
 timedatectl set-ntp true 2>/dev/null || true
-
-# 放行 443(代理) / 80(ACME证书签发) / 8080(订阅)
-iptables -I INPUT -p tcp --dport 443  -j ACCEPT 2>/dev/null || true
-iptables -I INPUT -p tcp --dport 80   -j ACCEPT 2>/dev/null || true
-iptables -I INPUT -p tcp --dport $SUB_PORT -j ACCEPT 2>/dev/null || true
-netfilter-persistent save 2>/dev/null || true
-ufw disable >/dev/null 2>&1 || true
 
 # --- 1. 内核优化 BBR/FQ ---
 sysctl -w net.ipv6.conf.all.disable_ipv6=1 >/dev/null 2>&1 || true
@@ -63,22 +60,15 @@ case "$(uname -m)" in
     *) echo "不支持CPU架构: $(uname -m)"; exit 1 ;;
 esac
 
-# --- 3. 停旧服务、清理 ---
-RAND_PORT=443
+# --- 3. 停旧服务 ---
 systemctl stop sing-box sb-sub nginx 2>/dev/null || true
 systemctl disable nginx 2>/dev/null || true
 systemctl daemon-reload
 sleep 1
-# 443 / 80 占用检查（ACME 需要 80 空闲）
-for prt in 443 80; do
-  if ss -tlnp 2>/dev/null | grep -q ":$prt "; then
-    echo "❌ $prt 端口被其他进程占用（nginx/caddy等），请先停掉再重试"; exit 1
-  fi
-done
 
-# --- 4. 节点名 / 域名 / 邮箱 / UUID 持久化 ---
+# --- 4. 节点名 / 域名 / 邮箱 / 端口 / UUID 持久化 ---
 echo "==============================================="
-echo "TikTok矩阵 VLESS-Vision-TLS 自有域名版 V5.0"
+echo "TikTok矩阵 VLESS-Vision-TLS 自有域名版 V5.1（自定义端口）"
 echo "==============================================="
 
 OLD_NAME=$(cat /etc/s-box/node_name 2>/dev/null || echo "")
@@ -109,6 +99,42 @@ else
     [ -z "$ACME_EMAIL" ] && ACME_EMAIL="admin@$DOMAIN"
 fi
 echo "$ACME_EMAIL" > /etc/s-box/acme_email
+
+# ---- 新增：自定义监听端口（代理端口，不是80） ----
+OLD_PORT=$(cat /etc/s-box/listen_port 2>/dev/null || echo "")
+if [ -n "$OLD_PORT" ]; then
+    read -r -p "代理监听端口(旧值:$OLD_PORT，回车保留): " INPUT_PORT
+    RAND_PORT="${INPUT_PORT:-$OLD_PORT}"
+else
+    read -r -p "代理监听端口(回车默认443，可改成如8443/2053/2083/2087/2096等常见放行端口): " INPUT_PORT
+    RAND_PORT="${INPUT_PORT:-443}"
+fi
+# 简单合法性校验
+case "$RAND_PORT" in
+    ''|*[!0-9]*) echo "❌ 端口必须是数字"; exit 1 ;;
+esac
+if [ "$RAND_PORT" -lt 1 ] || [ "$RAND_PORT" -gt 65535 ]; then
+    echo "❌ 端口范围必须在 1-65535"; exit 1
+fi
+if [ "$RAND_PORT" = "80" ] || [ "$RAND_PORT" = "$SUB_PORT" ]; then
+    echo "❌ 该端口与ACME签证书(80)或订阅服务($SUB_PORT)冲突，请换一个"; exit 1
+fi
+echo "$RAND_PORT" > /etc/s-box/listen_port
+echo "✅ 代理端口设置为: $RAND_PORT"
+
+# 放行 代理端口 / 80(ACME证书签发，固定不可改) / 8080(订阅)
+iptables -I INPUT -p tcp --dport "$RAND_PORT" -j ACCEPT 2>/dev/null || true
+iptables -I INPUT -p tcp --dport 80   -j ACCEPT 2>/dev/null || true
+iptables -I INPUT -p tcp --dport $SUB_PORT -j ACCEPT 2>/dev/null || true
+netfilter-persistent save 2>/dev/null || true
+ufw disable >/dev/null 2>&1 || true
+
+# 端口占用检查（代理端口 + 80，ACME必须用80签发）
+for prt in "$RAND_PORT" 80; do
+  if ss -tlnp 2>/dev/null | grep -q ":$prt "; then
+    echo "❌ $prt 端口被其他进程占用，请先停掉再重试"; exit 1
+  fi
+done
 
 # 公网IP（用于固定Token、订阅、节点名）
 IP=$(curl -s4m5 https://api.ipify.org 2>/dev/null || curl -s4m5 https://icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
@@ -152,7 +178,7 @@ else
     echo "✅ 生成新UUID: ${uuid:0:8}********"
 fi
 
-# --- 7. sing-box 配置：VLESS+Vision+TLS+内置ACME（自动签发&续期），禁UDP ---
+# --- 7. sing-box 配置：VLESS+Vision+TLS+内置ACME（自动签发&续期），禁UDP，自定义端口 ---
 cat > "$CONF_PATH" <<JSON
 {
   "log": { "level": "warn" },
@@ -210,7 +236,8 @@ systemctl daemon-reload
 systemctl enable sing-box
 systemctl restart sing-box
 
-# 等待 ACME 首次签发
+# 注意：ACME 首次签发依然走 80 端口的 HTTP-01 验证，
+# 即便代理端口不是443，这一步也需要80端口短暂可达。
 echo "⏳ 正在向 Let's Encrypt 申请证书（首次约5-30秒，需80端口可达）..."
 sleep 8
 
@@ -233,17 +260,18 @@ systemctl daemon-reload
 systemctl enable sb-sub
 systemctl restart sb-sub
 
-# --- 10. 生成订阅（VLESS+TLS，server=IP / servername=域名，真实证书无需skip-cert） ---
+# --- 10. 生成订阅（VLESS+TLS，server=IP / servername=域名，真实证书无需skip-cert，端口跟随自定义值） ---
 gen_sub() {
-    local token name_val
+    local token name_val port_val
     name_val=$(cat /etc/s-box/node_name)
     token=$(cat /etc/s-box/sub_token)
+    port_val=$(cat /etc/s-box/listen_port)
     cat > "${SUB_YAML_ROOT}/${token}/proxy.yaml" <<YAML
 proxies:
   - name: "$name_val-$IP"
     type: vless
     server: $IP
-    port: 443
+    port: $port_val
     uuid: $uuid
     network: tcp
     udp: false
@@ -252,7 +280,7 @@ proxies:
     flow: xtls-rprx-vision
     client-fingerprint: chrome
 YAML
-    echo "✅ 订阅文件已生成 $name_val-$IP ($DOMAIN)"
+    echo "✅ 订阅文件已生成 $name_val-$IP ($DOMAIN:$port_val)"
 }
 gen_sub
 
@@ -264,9 +292,10 @@ nb_info() {
     IP=$(echo "$IP" | tr -d '[:space:]'); [ -z "$IP" ] && IP="<填服务器IP>"
     u=$(jq -r '.inbounds[0].users[0].uuid' "$CP")
     dom=$(jq -r '.inbounds[0].tls.server_name' "$CP")
+    p=$(jq -r '.inbounds[0].listen_port' "$CP")
     node_name=$(cat /etc/s-box/node_name)
     sub_token=$(cat /etc/s-box/sub_token)
-    link="vless://$u@$IP:443?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$dom&fp=chrome&type=tcp#$node_name-$IP"
+    link="vless://$u@$IP:$p?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$dom&fp=chrome&type=tcp#$node_name-$IP"
     SUB_LINK="http://$IP:8080/$sub_token/proxy.yaml"
 
     cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -275,7 +304,7 @@ nb_info() {
 
     # 证书状态
     cert_ok="未知"
-    if echo | timeout 5 openssl s_client -connect 127.0.0.1:443 -servername "$dom" 2>/dev/null | grep -q "Verify return code: 0"; then
+    if echo | timeout 5 openssl s_client -connect 127.0.0.1:$p -servername "$dom" 2>/dev/null | grep -q "Verify return code: 0"; then
         cert_ok="\033[32m有效\033[0m"
     else
         cert_ok="\033[33m签发中/检查 journalctl -u sing-box\033[0m"
@@ -283,6 +312,7 @@ nb_info() {
 
     echo "==============================================="
     printf "节点名称: \033[36m%s-$IP\033[0m\n" "$node_name"
+    printf "监听端口: \033[36m%s\033[0m\n" "$p"
     printf "伪装域名: \033[36m%s\033[0m   证书: %b\n" "$dom" "$cert_ok"
     printf "拥塞算法: \033[32m%s\033[0m  队列: \033[32m%s\033[0m  BBR: %b\n" "$cc" "$qdisc" "$mod_status"
     echo "==============================================="
@@ -291,7 +321,7 @@ nb_info() {
     printf "  - name: \"%s-$IP\"\n" "$node_name"
     printf "    type: vless\n"
     printf "    server: %s\n" "$IP"
-    printf "    port: 443\n"
+    printf "    port: %s\n" "$p"
     printf "    uuid: %s\n" "$u"
     printf "    network: tcp\n"
     printf "    udp: false\n"
@@ -354,10 +384,11 @@ chmod +x /usr/local/bin/nb
 
 # --- 完成 ---
 echo -e "\n===================== 安装完成 ====================="
-echo "协议: VLESS + Vision + TLS（自有域名 $DOMAIN，证书自动续期）"
+echo "协议: VLESS + Vision + TLS（自有域名 $DOMAIN，端口 $RAND_PORT，证书自动续期）"
 echo "1. 查看节点/订阅/二维码: nb"
 echo "2. 证书/服务日志:        journalctl -u sing-box -n 30"
+echo "3. 改端口：再次运行本脚本，端口那一步输入新值即可（域名/UUID不变，客户端只需改端口）"
 echo "※ 证书由 sing-box 内置 ACME 自动签发与续期，无需手动操作。"
-echo "※ 若证书签发失败：确认 $DOMAIN 已解析到本机、80端口可达。"
+echo "※ 若证书签发失败：确认 $DOMAIN 已解析到本机、80端口可达（80端口和你的代理端口是两回事）。"
 echo "===================================================="
 /usr/local/bin/nb
