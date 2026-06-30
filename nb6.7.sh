@@ -2,16 +2,16 @@
 set -e
 
 # ===============================================================
-# TikTok 矩阵环境 - VLESS + Vision + TLS (自有域名) V5.1
+# TikTok 矩阵环境 - VLESS/Trojan + TLS (自有域名) V6.0
+#  - 安装时二选一协议：VLESS+Vision 或 Trojan
 #  - 用你自己的子域名 + Let's Encrypt 证书（sing-box内置ACME，自动续期）
 #  - 支持自定义监听端口（不再写死443，应对443被墙/被封场景）
-#  - 域名/邮箱/UUID/端口 全部持久化：重装后客户端零改动
+#  - 域名/邮箱/UUID或密码/端口/协议 全部持久化：重装后客户端零改动
 #  - 保留：禁UDP / BBR / 固定Token / 节点名带IP / HTTP订阅
 # 适配 sing-box 1.13.13 | Debian / Ubuntu
 #
 # 注意：Let's Encrypt 的 HTTP-01 验证依然需要 80 端口可达，
-# 这个和你的代理监听端口是两回事，不能用来当代理端口，
-# 也不需要对外暴露代理流量，只在签证书时短暂使用。
+# 这个和你的代理监听端口是两回事，只在签证书时短暂使用。
 # ===============================================================
 
 SB_VER="1.13.13"
@@ -66,10 +66,28 @@ systemctl disable nginx 2>/dev/null || true
 systemctl daemon-reload
 sleep 1
 
-# --- 4. 节点名 / 域名 / 邮箱 / 端口 / UUID 持久化 ---
+# --- 4. 协议 / 节点名 / 域名 / 邮箱 / 端口 / 密钥 持久化 ---
 echo "==============================================="
-echo "TikTok矩阵 VLESS-Vision-TLS 自有域名版 V5.1（自定义端口）"
+echo "TikTok矩阵 VLESS/Trojan 自有域名版 V6.0"
 echo "==============================================="
+
+# ---- 协议选择 ----
+OLD_PROTO=$(cat /etc/s-box/protocol 2>/dev/null || echo "")
+if [ -n "$OLD_PROTO" ]; then
+    echo "当前已安装协议: $OLD_PROTO"
+    read -r -p "选择协议 [1]VLESS+Vision [2]Trojan (旧值:$OLD_PROTO，回车保留): " INPUT_PROTO
+else
+    read -r -p "选择协议 [1]VLESS+Vision [2]Trojan (回车默认1): " INPUT_PROTO
+fi
+case "$INPUT_PROTO" in
+    1) PROTO="vless" ;;
+    2) PROTO="trojan" ;;
+    "") PROTO="${OLD_PROTO:-vless}" ;;
+    vless|trojan) PROTO="$INPUT_PROTO" ;;
+    *) echo "❌ 输入无效，只能选 1 或 2"; exit 1 ;;
+esac
+echo "$PROTO" > /etc/s-box/protocol
+echo "✅ 本次安装协议: $PROTO"
 
 OLD_NAME=$(cat /etc/s-box/node_name 2>/dev/null || echo "")
 if [ -n "$OLD_NAME" ]; then
@@ -100,7 +118,7 @@ else
 fi
 echo "$ACME_EMAIL" > /etc/s-box/acme_email
 
-# ---- 新增：自定义监听端口（代理端口，不是80） ----
+# ---- 自定义监听端口（代理端口，不是80） ----
 OLD_PORT=$(cat /etc/s-box/listen_port 2>/dev/null || echo "")
 if [ -n "$OLD_PORT" ]; then
     read -r -p "代理监听端口(旧值:$OLD_PORT，回车保留): " INPUT_PORT
@@ -109,7 +127,6 @@ else
     read -r -p "代理监听端口(回车默认443，可改成如8443/2053/2083/2087/2096等常见放行端口): " INPUT_PORT
     RAND_PORT="${INPUT_PORT:-443}"
 fi
-# 简单合法性校验
 case "$RAND_PORT" in
     ''|*[!0-9]*) echo "❌ 端口必须是数字"; exit 1 ;;
 esac
@@ -149,8 +166,8 @@ if [ -n "$RES_IP" ] && [ "$RES_IP" != "$IP" ]; then
     read -r -p "已确认解析正确? 回车继续 / Ctrl+C 退出: " _
 fi
 
-# 固定Token
-SUB_TOKEN=$(echo -n "${NODE_NAME}-${IP}-${SUB_SALT}" | sha256sum | awk '{print substr($1,1,36)}')
+# 固定Token（带上协议，VLESS和Trojan各自不同token，互不冲突）
+SUB_TOKEN=$(echo -n "${NODE_NAME}-${PROTO}-${IP}-${SUB_SALT}" | sha256sum | awk '{print substr($1,1,36)}')
 echo "$SUB_TOKEN" > /etc/s-box/sub_token
 mkdir -p "${SUB_YAML_ROOT}/${SUB_TOKEN}"
 
@@ -168,24 +185,36 @@ else
 fi
 /etc/s-box/sing-box version >/dev/null 2>&1 || { echo "❌ sing-box 安装失败"; exit 1; }
 
-# --- 6. UUID 持久化（重装复用，客户端零改动） ---
-if [ -f /etc/s-box/uuid ]; then
-    uuid=$(cat /etc/s-box/uuid)
-    echo "✅ 复用已有UUID: ${uuid:0:8}********"
+# --- 6. 认证凭据持久化：VLESS用uuid，Trojan用密码 ---
+if [ "$PROTO" = "vless" ]; then
+    if [ -f /etc/s-box/uuid ]; then
+        uuid=$(cat /etc/s-box/uuid)
+        echo "✅ 复用已有UUID: ${uuid:0:8}********"
+    else
+        uuid=$(/etc/s-box/sing-box generate uuid)
+        echo "$uuid" > /etc/s-box/uuid
+        echo "✅ 生成新UUID: ${uuid:0:8}********"
+    fi
 else
-    uuid=$(/etc/s-box/sing-box generate uuid)
-    echo "$uuid" > /etc/s-box/uuid
-    echo "✅ 生成新UUID: ${uuid:0:8}********"
+    if [ -f /etc/s-box/trojan_pass ]; then
+        tpass=$(cat /etc/s-box/trojan_pass)
+        echo "✅ 复用已有Trojan密码: ${tpass:0:4}********"
+    else
+        tpass=$(/etc/s-box/sing-box generate rand --hex 16)
+        echo "$tpass" > /etc/s-box/trojan_pass
+        echo "✅ 生成新Trojan密码: ${tpass:0:4}********"
+    fi
 fi
 
-# --- 7. sing-box 配置：VLESS+Vision+TLS+内置ACME（自动签发&续期），禁UDP，自定义端口 ---
+# --- 7. sing-box 配置：按协议生成 inbound，TLS+内置ACME（自动签发&续期），禁UDP ---
+if [ "$PROTO" = "vless" ]; then
 cat > "$CONF_PATH" <<JSON
 {
   "log": { "level": "warn" },
   "inbounds": [
     {
       "type": "vless",
-      "tag": "vless-in",
+      "tag": "proxy-in",
       "listen": "0.0.0.0",
       "listen_port": $RAND_PORT,
       "users": [
@@ -213,6 +242,43 @@ cat > "$CONF_PATH" <<JSON
   }
 }
 JSON
+else
+cat > "$CONF_PATH" <<JSON
+{
+  "log": { "level": "warn" },
+  "inbounds": [
+    {
+      "type": "trojan",
+      "tag": "proxy-in",
+      "listen": "0.0.0.0",
+      "listen_port": $RAND_PORT,
+      "users": [
+        { "password": "$tpass" }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "$DOMAIN",
+        "acme": {
+          "domain": ["$DOMAIN"],
+          "email": "$ACME_EMAIL",
+          "data_directory": "/etc/s-box/acme"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": {
+    "rules": [
+      { "network": "udp", "action": "reject" }
+    ],
+    "final": "direct"
+  }
+}
+JSON
+fi
+
 if ! /etc/s-box/sing-box check -c "$CONF_PATH"; then
     echo "❌ 配置校验失败，已中止"; exit 1
 fi
@@ -220,7 +286,7 @@ fi
 # --- 8. systemd 服务 ---
 cat > /etc/systemd/system/sing-box.service <<EOF
 [Unit]
-Description=sing-box VLESS Vision TLS Service
+Description=sing-box Proxy TLS Service
 After=network.target nss-lookup.target chrony.service
 
 [Service]
@@ -236,8 +302,6 @@ systemctl daemon-reload
 systemctl enable sing-box
 systemctl restart sing-box
 
-# 注意：ACME 首次签发依然走 80 端口的 HTTP-01 验证，
-# 即便代理端口不是443，这一步也需要80端口短暂可达。
 echo "⏳ 正在向 Let's Encrypt 申请证书（首次约5-30秒，需80端口可达）..."
 sleep 8
 
@@ -260,13 +324,14 @@ systemctl daemon-reload
 systemctl enable sb-sub
 systemctl restart sb-sub
 
-# --- 10. 生成订阅（VLESS+TLS，server=IP / servername=域名，真实证书无需skip-cert，端口跟随自定义值） ---
+# --- 10. 生成订阅（按协议生成对应Clash proxies，端口/域名跟随配置） ---
 gen_sub() {
     local token name_val port_val
     name_val=$(cat /etc/s-box/node_name)
     token=$(cat /etc/s-box/sub_token)
     port_val=$(cat /etc/s-box/listen_port)
-    cat > "${SUB_YAML_ROOT}/${token}/proxy.yaml" <<YAML
+    if [ "$PROTO" = "vless" ]; then
+        cat > "${SUB_YAML_ROOT}/${token}/proxy.yaml" <<YAML
 proxies:
   - name: "$name_val-$IP"
     type: vless
@@ -280,7 +345,21 @@ proxies:
     flow: xtls-rprx-vision
     client-fingerprint: chrome
 YAML
-    echo "✅ 订阅文件已生成 $name_val-$IP ($DOMAIN:$port_val)"
+    else
+        cat > "${SUB_YAML_ROOT}/${token}/proxy.yaml" <<YAML
+proxies:
+  - name: "$name_val-$IP"
+    type: trojan
+    server: $IP
+    port: $port_val
+    password: $tpass
+    network: tcp
+    udp: false
+    sni: $DOMAIN
+    client-fingerprint: chrome
+YAML
+    fi
+    echo "✅ 订阅文件已生成 $name_val-$IP ($PROTO, $DOMAIN:$port_val)"
 }
 gen_sub
 
@@ -290,19 +369,17 @@ nb_info() {
     CP="/etc/s-box/sb.json"
     IP=$(curl -s4m5 https://api.ipify.org 2>/dev/null || curl -s4m5 https://icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
     IP=$(echo "$IP" | tr -d '[:space:]'); [ -z "$IP" ] && IP="<填服务器IP>"
-    u=$(jq -r '.inbounds[0].users[0].uuid' "$CP")
+    proto=$(cat /etc/s-box/protocol 2>/dev/null || echo "vless")
     dom=$(jq -r '.inbounds[0].tls.server_name' "$CP")
     p=$(jq -r '.inbounds[0].listen_port' "$CP")
     node_name=$(cat /etc/s-box/node_name)
     sub_token=$(cat /etc/s-box/sub_token)
-    link="vless://$u@$IP:$p?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$dom&fp=chrome&type=tcp#$node_name-$IP"
     SUB_LINK="http://$IP:8080/$sub_token/proxy.yaml"
 
     cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
     qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
     mod_status=$(lsmod | grep -q bbr && echo -e "\033[32m已加载\033[0m" || echo -e "\033[31m未加载\033[0m")
 
-    # 证书状态
     cert_ok="未知"
     if echo | timeout 5 openssl s_client -connect 127.0.0.1:$p -servername "$dom" 2>/dev/null | grep -q "Verify return code: 0"; then
         cert_ok="\033[32m有效\033[0m"
@@ -312,27 +389,50 @@ nb_info() {
 
     echo "==============================================="
     printf "节点名称: \033[36m%s-$IP\033[0m\n" "$node_name"
+    printf "协议:     \033[36m%s\033[0m\n" "$proto"
     printf "监听端口: \033[36m%s\033[0m\n" "$p"
     printf "伪装域名: \033[36m%s\033[0m   证书: %b\n" "$dom" "$cert_ok"
     printf "拥塞算法: \033[32m%s\033[0m  队列: \033[32m%s\033[0m  BBR: %b\n" "$cc" "$qdisc" "$mod_status"
     echo "==============================================="
     echo "📋 Clash 节点配置"
     echo "==============================================="
-    printf "  - name: \"%s-$IP\"\n" "$node_name"
-    printf "    type: vless\n"
-    printf "    server: %s\n" "$IP"
-    printf "    port: %s\n" "$p"
-    printf "    uuid: %s\n" "$u"
-    printf "    network: tcp\n"
-    printf "    udp: false\n"
-    printf "    tls: true\n"
-    printf "    servername: %s\n" "$dom"
-    printf "    flow: xtls-rprx-vision\n"
-    printf "    client-fingerprint: chrome\n"
-    echo "-----------------------------------------------"
-    echo "🔗 VLESS分享链接 / 二维码"
-    echo -e "\033[32m$link\033[0m"
-    qrencode -t ansiutf8 "$link"
+
+    if [ "$proto" = "vless" ]; then
+        u=$(jq -r '.inbounds[0].users[0].uuid' "$CP")
+        link="vless://$u@$IP:$p?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$dom&fp=chrome&type=tcp#$node_name-$IP"
+        printf "  - name: \"%s-$IP\"\n" "$node_name"
+        printf "    type: vless\n"
+        printf "    server: %s\n" "$IP"
+        printf "    port: %s\n" "$p"
+        printf "    uuid: %s\n" "$u"
+        printf "    network: tcp\n"
+        printf "    udp: false\n"
+        printf "    tls: true\n"
+        printf "    servername: %s\n" "$dom"
+        printf "    flow: xtls-rprx-vision\n"
+        printf "    client-fingerprint: chrome\n"
+        echo "-----------------------------------------------"
+        echo "🔗 VLESS分享链接 / 二维码"
+        echo -e "\033[32m$link\033[0m"
+        qrencode -t ansiutf8 "$link"
+    else
+        tp=$(jq -r '.inbounds[0].users[0].password' "$CP")
+        link="trojan://$tp@$IP:$p?security=tls&sni=$dom&fp=chrome&type=tcp#$node_name-$IP"
+        printf "  - name: \"%s-$IP\"\n" "$node_name"
+        printf "    type: trojan\n"
+        printf "    server: %s\n" "$IP"
+        printf "    port: %s\n" "$p"
+        printf "    password: %s\n" "$tp"
+        printf "    network: tcp\n"
+        printf "    udp: false\n"
+        printf "    sni: %s\n" "$dom"
+        printf "    client-fingerprint: chrome\n"
+        echo "-----------------------------------------------"
+        echo "🔗 Trojan分享链接 / 二维码"
+        echo -e "\033[32m$link\033[0m"
+        qrencode -t ansiutf8 "$link"
+    fi
+
     echo "==============================================="
     echo "📡 HTTP订阅链接"
     echo -e "\033[33m$SUB_LINK\033[0m"
@@ -384,10 +484,10 @@ chmod +x /usr/local/bin/nb
 
 # --- 完成 ---
 echo -e "\n===================== 安装完成 ====================="
-echo "协议: VLESS + Vision + TLS（自有域名 $DOMAIN，端口 $RAND_PORT，证书自动续期）"
+echo "协议: $PROTO + TLS（自有域名 $DOMAIN，端口 $RAND_PORT，证书自动续期）"
 echo "1. 查看节点/订阅/二维码: nb"
 echo "2. 证书/服务日志:        journalctl -u sing-box -n 30"
-echo "3. 改端口：再次运行本脚本，端口那一步输入新值即可（域名/UUID不变，客户端只需改端口）"
+echo "3. 换协议/改端口：再次运行本脚本，对应步骤输入新值即可（域名不变，旧凭据各自保留互不影响）"
 echo "※ 证书由 sing-box 内置 ACME 自动签发与续期，无需手动操作。"
 echo "※ 若证书签发失败：确认 $DOMAIN 已解析到本机、80端口可达（80端口和你的代理端口是两回事）。"
 echo "===================================================="
