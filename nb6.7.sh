@@ -20,7 +20,7 @@ SUB_PORT=8080
 SUB_YAML_ROOT="/etc/s-box/sub"
 
 # ⚠️ 固定盐：决定订阅Token，改成你自己的随机串，所有机器统一、勿外泄
-SUB_SALT="CHANGE-ME-请改成你自己的随机密码-abc123XYZ"
+SUB_SALT="CHANGE-ME-1213"
 
 # --- 0. 前置检查与依赖 ---
 [ "$(id -u)" != "0" ] && { echo "请用 root 运行"; exit 1; }
