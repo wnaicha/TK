@@ -2,10 +2,11 @@
 set -e
 
 # ===============================================================
-# TikTok 矩阵环境 - VLESS/Trojan + TLS + 多CA自适应版 V10.0
+# TikTok 矩阵环境 - VLESS/Trojan + TLS + 多CA自适应终极版 V10.2
+#  - 彻底修复：还原第一版直接下载逻辑，移除 -q 参数，拒绝下载卡死
 #  - 破局 429 限流：支持自选 Let's Encrypt / ZeroSSL / Buypass 证书链
 #  - 敏感值优先读环境变量，全线参数完美持久化
-#  - 完美联动：物理屏蔽 UDP 防 WebRTC 泄露，同步输出规范化 Provider 订阅
+#  - 完美分发：输出无顶层 proxies 标签的规范化 Provider 订阅文件
 # 适配 sing-box 1.13.13 | 仅支持 Debian / Ubuntu
 # ===============================================================
 
@@ -93,7 +94,7 @@ read_secret() {
 # ================================================================
 echo ""
 echo "========================================================"
-echo " TikTok 矩阵环境 VLESS/Trojan 终极多 CA 自适应版 V10.0"
+echo " TikTok 矩阵环境 VLESS/Trojan 终极多 CA 自适应版 V10.2"
 echo "========================================================"
 
 echo ""
@@ -126,14 +127,13 @@ read_val NODE_NAME "输入节点名称"     /etc/s-box/node_name  "NODE_NAME" "T
 read_val DOMAIN    "输入完整解析域名" /etc/s-box/domain     "DOMAIN"    ""
 read_val RAND_PORT "自定义代理监听端口" /etc/s-box/listen_port "PORT"      "443"
 
-# 固定的高通透率 ACME 公共通知邮箱，防 Let's Encrypt 恶意限流
 ACME_EMAIL="tiktokmatrix.ca@gmail.com"
 echo "$ACME_EMAIL" > /etc/s-box/acme_email
 
 echo ""
 echo "▸ 4. 【核心升级】自选证书签发机构 (破局 429 限流关键)"
 OLD_CA=$(cat /etc/s-box/acme_server_idx 2>/dev/null || echo "1")
-echo "   [1] Let's Encrypt (默认 / 有极严格的周重复申请 429 限流)"
+echo "   [1] Let's Encrypt (默认 / 如果遇到 429 请切到下面两个)"
 echo "   [2] ZeroSSL (推荐 / 额度独立 / 申请极速)"
 echo "   [3] Buypass (挪威老牌 CA / 稳定通透 / 额度宽松)"
 read -r -p "   请选择证书服务商 [1-3] (上次: $OLD_CA, 回车保留): " CA_CHOICE
@@ -155,20 +155,27 @@ case "$CA_CHOICE" in
         ;;
 esac
 
-# 端口碰撞验证
+# 端口验证
 case "$RAND_PORT" in ''|*[!0-9]*) echo "❌ 端口必须是纯数字"; exit 1 ;; esac
 { [ "$RAND_PORT" -lt 1 ] || [ "$RAND_PORT" -gt 65535 ]; } && { echo "❌ 端口超出1-65535范围"; exit 1; }
 [ "$RAND_PORT" = "$SUB_PORT" ] && { echo "❌ 端口与订阅端口($SUB_PORT)冲突！"; exit 1; }
 
 # ================================================================
-# 网络与公网 IP 嗅探
+# 网络与公网 IP 嗅探与硬件架构检测
 # ================================================================
 IP=$(curl -s4m5 https://api.ipify.org 2>/dev/null \
   || curl -s4m5 https://icanhazip.com 2>/dev/null \
   || hostname -I | awk '{print $1}')
 IP=$(echo "$IP" | tr -d '[:space:]')
-[ -z "$IP" ] && { echo "❌ 无法获取本机公网 IP，请检查物理网络"; exit 1; }
+[ -z "$IP" ] && { echo "❌ 无法获取本机公网 IP"; exit 1; }
 echo "$IP" > /etc/s-box/server_ip
+
+case "$(uname -m)" in
+    x86_64|amd64)   cpu="amd64" ;;
+    aarch64|arm64)  cpu="arm64" ;;
+    armv7l|armv7)   cpu="armv7" ;;
+    *) echo "不支持CPU架构: $(uname -m)"; exit 1 ;;
+esac
 
 echo ""
 echo "📡 本地集群拓扑 -> 节点: $NODE_NAME | IP: $IP | 端口: $RAND_PORT"
@@ -188,7 +195,7 @@ _cf() {
 
 _chk=$(_cf GET "/zones/${CF_ZONE_ID}")
 if ! echo "$_chk" | jq -e '.success==true' >/dev/null 2>&1; then
-    echo "❌ Cloudflare 凭据验证失败，请检查 TOKEN 或 ZONE_ID 是否输入有误！"
+    echo "❌ Cloudflare 凭据验证失败，请检查环境变量输入！"
     exit 1
 fi
 
@@ -209,10 +216,8 @@ else
     echo "   ✅ 已成功创建 A 记录: $DOMAIN → $IP"
 fi
 
-# 核心资产防污染：立即擦除敏感变量，绝不落盘
 unset CF_TOKEN CF_ZONE_ID _cf _chk _pl _list _rid _oip _r
 
-# 域名就地解析强同步探测
 echo "⏳ 正在同步全网 DNS 缓存（最多等待 90 秒）..."
 for _i in $(seq 1 18); do
     sleep 5
@@ -222,7 +227,7 @@ for _i in $(seq 1 18); do
 done
 
 # ================================================================
-# 物理隔离与防火墙策略
+# 防火墙策略
 # ================================================================
 iptables -I INPUT -p tcp --dport "$RAND_PORT" -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport 80            -j ACCEPT 2>/dev/null || true
@@ -230,31 +235,35 @@ iptables -I INPUT -p tcp --dport $SUB_PORT     -j ACCEPT 2>/dev/null || true
 netfilter-persistent save 2>/dev/null || true
 ufw disable >/dev/null 2>&1 || true
 
-# 【修复】移除了对 80 端口的占用检查，只验证自定义代理端口，防止二次重装时因旧服务监听引发冲突
 if ss -tlnp 2>/dev/null | grep -q ":$RAND_PORT "; then
     echo "❌ 端口 $RAND_PORT 已被其他应用锁定，请更换端口再试"; exit 1
 fi
 
-# 离散 Token 异步哈希运算
 SUB_TOKEN=$(echo -n "${NODE_NAME}-${PROTO}-${IP}-${SUB_SALT}" | sha256sum | awk '{print $1}')
 unset SUB_SALT
 echo "$SUB_TOKEN" > /etc/s-box/sub_token
 mkdir -p "${SUB_YAML_ROOT}/${SUB_TOKEN}"
 
 # ================================================================
-# sing-box 核心组件下载与架构校验
+# 下载 sing-box【彻底修复版：退回到你第一版的原汁原味高通透下载机制】
 # ================================================================
 INSTALLED_VER=$(/etc/s-box/sing-box version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1 || echo "")
 if [ "$INSTALLED_VER" != "$SB_VER" ]; then
-    echo "📦 正在下发原厂 sing-box v$SB_VER 二进制内核..."
-    wget -q -O /etc/s-box/sing-box.tar.gz \
-        "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${cpu}.tar.gz"
+    echo "📦 正在下载原厂 sing-box v$SB_VER 二进制内核..."
+    
+    # 彻底剥离任何限制性静默参数，网络发生延迟会立刻在前台吐出状态，绝不听牌死机
+    if ! wget -T 10 -t 3 -O /etc/s-box/sing-box.tar.gz "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${cpu}.tar.gz"; then
+        echo "⚠️  原版 GitHub 主干物理断流，系统触发防卡死防御，秒切加速镜像抓取..."
+        rm -f /etc/s-box/sing-box.tar.gz
+        wget -O /etc/s-box/sing-box.tar.gz "https://ghp.ci/https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-linux-${cpu}.tar.gz"
+    fi
+
     tar xzf /etc/s-box/sing-box.tar.gz -C /etc/s-box
     mv /etc/s-box/sing-box-*/sing-box /etc/s-box/sing-box
     chmod +x /etc/s-box/sing-box
     rm -rf /etc/s-box/sing-box.tar.gz /etc/s-box/sing-box-*-linux-*
 else
-    echo "   ✅ sing-box v$SB_VER 核心完好，跳过下载"
+    echo "   ✅ sing-box v$SB_VER 核心完好，直接启用"
 fi
 
 # ================================================================
@@ -279,7 +288,7 @@ else
 fi
 
 # ================================================================
-# 构建服务端动态 JSON（引入自适应多 CA server 分发）
+# 构建服务端动态 JSON
 # ================================================================
 if [ "$PROTO" = "vless" ]; then
 cat > "$CONF_PATH" <<JSON
@@ -367,7 +376,7 @@ sleep 12
 systemctl restart sb-sub
 
 # ================================================================
-# 【修复】同步输出纯净的、无 proxies 顶层标签的标准 Provider 订阅文件
+# 生成纯净 Provider 标准订阅文件
 # ================================================================
 _token=$(cat /etc/s-box/sub_token)
 _port=$(cat /etc/s-box/listen_port)
@@ -420,7 +429,7 @@ nb_info() {
     echo | timeout 5 openssl s_client -connect "127.0.0.1:$p" -servername "$dom" 2>/dev/null \
         | grep -q "Verify return code: 0" \
         && cert="\033[32m 运行中 (安全合规) \033[0m" \
-        || cert="\033[33m 签发中 (如长久卡死请换 CA 重装或查看: journalctl -u sing-box) \033[0m"
+        || cert="\033[33m 签发中 (如长久卡死请更换 CA 重装或查看: journalctl -u sing-box) \033[0m"
 
     echo "=========================================================="
     printf "集群节点: \033[36m%s-%s\033[0m   安全协议: \033[36m%s\033[0m\n" "$node_name" "$IP" "$proto"
