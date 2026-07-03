@@ -2,7 +2,7 @@
 set -e
 
 # ===============================================================
-# TikTok 矩阵环境 - VLESS/Trojan + TLS V10.1
+# TikTok 矩阵环境 - VLESS/Trojan + TLS V10.1 (添加证书跳过版)
 #  - 修复 ACME CA 字段：使用 provider 而非 server/directory_url
 #  - 敏感值优先读环境变量，不落盘
 #  - Cloudflare API 自动解析域名
@@ -10,7 +10,7 @@ set -e
 #  - 下载失败自动切国内镜像
 #  - ALPN h2/http1.1 兼容补丁
 #  - 浏览器指纹 safari
-#  - 无 skip-cert-verify
+#  - 加入 skip-cert-verify: true 解决软路由证书误报
 #  - 域名/端口/协议/UUID/密码 持久化，重装零改动
 # 适配 sing-box 1.13.13 | Debian / Ubuntu
 # ===============================================================
@@ -108,7 +108,7 @@ read_secret() {
 # ================================================================
 echo ""
 echo "=========================================="
-echo " TikTok矩阵 VLESS/Trojan V10.1"
+echo " TikTok矩阵 VLESS/Trojan V10.1 (跳过验证版)"
 echo "=========================================="
 
 echo ""
@@ -401,7 +401,7 @@ sleep 15
 systemctl restart sb-sub
 
 # ================================================================
-# 生成订阅（safari指纹，无skip-cert-verify）
+# 生成订阅（已注入 skip-cert-verify: true）
 # ================================================================
 _token=$(cat /etc/s-box/sub_token)
 _port=$(cat /etc/s-box/listen_port)
@@ -417,6 +417,7 @@ proxies:
     network: tcp
     udp: false
     tls: true
+    skip-cert-verify: true
     servername: $DOMAIN
     flow: xtls-rprx-vision
     client-fingerprint: safari
@@ -432,6 +433,7 @@ proxies:
     network: tcp
     udp: false
     tls: true
+    skip-cert-verify: true
     sni: $DOMAIN
     client-fingerprint: safari
 YAML
@@ -487,14 +489,14 @@ nb_info() {
         link="vless://$u@$IP:$p?encryption=none&flow=xtls-rprx-vision&security=tls&sni=$dom&fp=safari&type=tcp#$node_name-$IP"
         printf "  - name: \"%s-%s\"\n    type: vless\n    server: %s\n    port: %s\n" \
                "$node_name" "$IP" "$IP" "$p"
-        printf "    uuid: %s\n    network: tcp\n    udp: false\n    tls: true\n" "$u"
+        printf "    uuid: %s\n    network: tcp\n    udp: false\n    tls: true\n    skip-cert-verify: true\n" "$u"
         printf "    servername: %s\n    flow: xtls-rprx-vision\n    client-fingerprint: safari\n" "$dom"
     else
         tp=$(jq -r '.inbounds[0].users[0].password' "$CP")
         link="trojan://$tp@$IP:$p?security=tls&sni=$dom&fp=safari&type=tcp#$node_name-$IP"
         printf "  - name: \"%s-%s\"\n    type: trojan\n    server: %s\n    port: %s\n" \
                "$node_name" "$IP" "$IP" "$p"
-        printf "    password: %s\n    network: tcp\n    udp: false\n    tls: true\n" "$tp"
+        printf "    password: %s\n    network: tcp\n    udp: false\n    tls: true\n    skip-cert-verify: true\n" "$tp"
         printf "    sni: %s\n    client-fingerprint: safari\n" "$dom"
     fi
 
@@ -549,7 +551,7 @@ chmod +x /usr/local/bin/nb
 echo ""
 echo "==================== 安装完成 ===================="
 echo "协议:$PROTO  域名:$DOMAIN  端口:$RAND_PORT"
-echo "CA:$CA_NAME  指纹:safari  skip-cert-verify:已移除"
+echo "CA:$CA_NAME  指纹:safari  skip-cert-verify:已开启"
 echo "CF Token/ZoneID/SUB_SALT 均未写入服务器 ✅"
 echo "输入 nb 查看节点信息和订阅链接"
 echo "==================================================="
