@@ -3,6 +3,15 @@ set -e
 
 # ===============================================================
 # TikTok 矩阵环境 - VLESS/Trojan + TLS V10.0
+#  - 敏感值优先读环境变量，不落盘
+#  - Cloudflare API 自动解析域名
+#  - 多CA备选：Let's Encrypt / ZeroSSL / Buypass
+#  - 下载失败自动切国内镜像
+#  - ALPN h2/http1.1 兼容补丁
+#  - 浏览器指纹 safari
+#  - 去除 skip-cert-verify（路由器证书已更新）
+#  - 域名/端口/协议/UUID/密码 持久化，重装零改动
+# 适配 sing-box 1.13.13 | Debian / Ubuntu
 # ===============================================================
 
 SB_VER="1.13.13"
@@ -306,7 +315,7 @@ cat > "$CONF_PATH" <<JSON
       "server_name": "$DOMAIN",
       "alpn": ["h2", "http/1.1"],
       "acme": {
-        "server": "$CA_SERVER",
+        "directory_url": "$CA_SERVER",
         "domain": ["$DOMAIN"],
         "email": "$ACME_EMAIL",
         "data_directory": "/etc/s-box/acme"
@@ -333,7 +342,7 @@ cat > "$CONF_PATH" <<JSON
       "server_name": "$DOMAIN",
       "alpn": ["h2", "http/1.1"],
       "acme": {
-        "server": "$CA_SERVER",
+        "directory_url": "$CA_SERVER",
         "domain": ["$DOMAIN"],
         "email": "$ACME_EMAIL",
         "data_directory": "/etc/s-box/acme"
