@@ -2,14 +2,15 @@
 set -e
 
 # ===============================================================
-# TikTok 矩阵环境 - VLESS/Trojan + TLS V10.0
+# TikTok 矩阵环境 - VLESS/Trojan + TLS V10.1
+#  - 修复 ACME CA 字段：使用 provider 而非 server/directory_url
 #  - 敏感值优先读环境变量，不落盘
 #  - Cloudflare API 自动解析域名
 #  - 多CA备选：Let's Encrypt / ZeroSSL / Buypass
 #  - 下载失败自动切国内镜像
 #  - ALPN h2/http1.1 兼容补丁
 #  - 浏览器指纹 safari
-#  - 去除 skip-cert-verify（路由器证书已更新）
+#  - 无 skip-cert-verify
 #  - 域名/端口/协议/UUID/密码 持久化，重装零改动
 # 适配 sing-box 1.13.13 | Debian / Ubuntu
 # ===============================================================
@@ -107,7 +108,7 @@ read_secret() {
 # ================================================================
 echo ""
 echo "=========================================="
-echo " TikTok矩阵 VLESS/Trojan V10.0"
+echo " TikTok矩阵 VLESS/Trojan V10.1"
 echo "=========================================="
 
 echo ""
@@ -140,7 +141,7 @@ read_val NODE_NAME "节点名称"     /etc/s-box/node_name   "NODE_NAME" "TK-mat
 read_val DOMAIN    "子域名"       /etc/s-box/domain      "DOMAIN"    ""
 read_val RAND_PORT "代理监听端口" /etc/s-box/listen_port "PORT"      "443"
 
-# ACME邮箱（有旧值复用，没有用域名默认）
+# ACME邮箱
 OLD_EMAIL=$(cat /etc/s-box/acme_email 2>/dev/null || echo "")
 if [ -n "$OLD_EMAIL" ]; then
     ACME_EMAIL="$OLD_EMAIL"
@@ -155,19 +156,17 @@ echo ""
 echo "▸ 4. 证书签发机构"
 OLD_CA=$(cat /etc/s-box/acme_ca 2>/dev/null || echo "1")
 echo "  [1] Let's Encrypt（默认）"
-echo "  [2] ZeroSSL（推荐，速度快）"
+echo "  [2] ZeroSSL（速度快）"
 echo "  [3] Buypass（备用）"
 read -r -p "  选择CA [1-3] (旧值:$OLD_CA，回车保留): " CA_CHOICE
 CA_CHOICE="${CA_CHOICE:-$OLD_CA}"
 echo "$CA_CHOICE" > /etc/s-box/acme_ca
 case "$CA_CHOICE" in
-    2) CA_SERVER="https://acme.zerossl.com/v2/DV90"
-       echo "  ✅ ZeroSSL" ;;
-    3) CA_SERVER="https://api.buypass.com/acme/directory"
-       echo "  ✅ Buypass" ;;
-    *) CA_SERVER="https://acme-v02.api.letsencrypt.org/directory"
-       echo "  ✅ Let's Encrypt" ;;
+    2) CA_PROVIDER="zerossl";    CA_NAME="ZeroSSL" ;;
+    3) CA_PROVIDER="buypass";    CA_NAME="Buypass" ;;
+    *) CA_PROVIDER="letsencrypt"; CA_NAME="Let's Encrypt" ;;
 esac
+echo "  ✅ $CA_NAME"
 
 # 端口校验
 case "$RAND_PORT" in ''|*[!0-9]*) echo "❌ 端口必须是数字"; exit 1 ;; esac
@@ -184,7 +183,7 @@ IP=$(echo "$IP" | tr -d '[:space:]')
 [ -z "$IP" ] && { echo "❌ 取不到公网IP"; exit 1; }
 echo "$IP" > /etc/s-box/server_ip
 echo ""
-echo "📡 IP: $IP | 域名: $DOMAIN | 协议: $PROTO | 端口: $RAND_PORT"
+echo "📡 IP:$IP | 域名:$DOMAIN | 协议:$PROTO | 端口:$RAND_PORT | CA:$CA_NAME"
 
 # ================================================================
 # Cloudflare 自动设置 A 记录
@@ -248,7 +247,7 @@ for prt in "$RAND_PORT" 80; do
     ss -tlnp 2>/dev/null | grep -q ":$prt " && { echo "❌ $prt 端口被占用"; exit 1; }
 done
 
-# 订阅Token（算完立即unset盐）
+# 订阅Token
 SUB_TOKEN=$(echo -n "${NODE_NAME}-${PROTO}-${IP}-${SUB_SALT}" | sha256sum | awk '{print substr($1,1,36)}')
 unset SUB_SALT
 echo "$SUB_TOKEN" > /etc/s-box/sub_token
@@ -300,24 +299,27 @@ else
 fi
 
 # ================================================================
-# sing-box 配置（ALPN h2/http1.1，无skip-cert-verify）
+# sing-box 配置
+# provider 字段值：letsencrypt / zerossl / buypass
 # ================================================================
 if [ "$PROTO" = "vless" ]; then
 cat > "$CONF_PATH" <<JSON
 {
   "log": { "level": "warn" },
   "inbounds": [{
-    "type": "vless", "tag": "proxy-in",
-    "listen": "0.0.0.0", "listen_port": $RAND_PORT,
+    "type": "vless",
+    "tag": "proxy-in",
+    "listen": "0.0.0.0",
+    "listen_port": $RAND_PORT,
     "users": [{ "uuid": "$uuid", "flow": "xtls-rprx-vision" }],
     "tls": {
       "enabled": true,
       "server_name": "$DOMAIN",
       "alpn": ["h2", "http/1.1"],
       "acme": {
-        "directory_url": "$CA_SERVER",
         "domain": ["$DOMAIN"],
         "email": "$ACME_EMAIL",
+        "provider": "$CA_PROVIDER",
         "data_directory": "/etc/s-box/acme"
       }
     }
@@ -334,17 +336,19 @@ cat > "$CONF_PATH" <<JSON
 {
   "log": { "level": "warn" },
   "inbounds": [{
-    "type": "trojan", "tag": "proxy-in",
-    "listen": "0.0.0.0", "listen_port": $RAND_PORT,
+    "type": "trojan",
+    "tag": "proxy-in",
+    "listen": "0.0.0.0",
+    "listen_port": $RAND_PORT,
     "users": [{ "password": "$tpass" }],
     "tls": {
       "enabled": true,
       "server_name": "$DOMAIN",
       "alpn": ["h2", "http/1.1"],
       "acme": {
-        "directory_url": "$CA_SERVER",
         "domain": ["$DOMAIN"],
         "email": "$ACME_EMAIL",
+        "provider": "$CA_PROVIDER",
         "data_directory": "/etc/s-box/acme"
       }
     }
@@ -358,6 +362,7 @@ cat > "$CONF_PATH" <<JSON
 JSON
 fi
 /etc/s-box/sing-box check -c "$CONF_PATH" || { echo "❌ 配置校验失败"; exit 1; }
+echo "  ✅ 配置校验通过"
 
 # ================================================================
 # systemd 服务
@@ -448,7 +453,7 @@ nb_info() {
     p=$(jq -r '.inbounds[0].listen_port' "$CP")
     node_name=$(cat /etc/s-box/node_name)
     sub_token=$(cat /etc/s-box/sub_token)
-    ca=$(cat /etc/s-box/acme_ca 2>/dev/null || echo "1")
+    ca_idx=$(cat /etc/s-box/acme_ca 2>/dev/null || echo "1")
     SUB_LINK="http://$IP:8080/$sub_token/proxy.yaml"
 
     cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
@@ -456,12 +461,11 @@ nb_info() {
     bbr=$(lsmod | grep -q bbr \
         && echo -e "\033[32m已加载\033[0m" \
         || echo -e "\033[31m未加载\033[0m")
-    case "$ca" in
+    case "$ca_idx" in
         2) ca_name="ZeroSSL" ;;
         3) ca_name="Buypass" ;;
         *) ca_name="Let's Encrypt" ;;
     esac
-
     cert="未知"
     echo | timeout 5 openssl s_client \
         -connect "127.0.0.1:$p" -servername "$dom" -alpn h2 2>/dev/null \
@@ -544,8 +548,9 @@ chmod +x /usr/local/bin/nb
 
 echo ""
 echo "==================== 安装完成 ===================="
-echo "协议:$PROTO  域名:$DOMAIN  端口:$RAND_PORT  指纹:safari"
-echo "CA:$ca_name  skip-cert-verify:已移除 ✅"
+echo "协议:$PROTO  域名:$DOMAIN  端口:$RAND_PORT"
+echo "CA:$CA_NAME  指纹:safari  skip-cert-verify:已移除"
 echo "CF Token/ZoneID/SUB_SALT 均未写入服务器 ✅"
+echo "输入 nb 查看节点信息和订阅链接"
 echo "==================================================="
 /usr/local/bin/nb
