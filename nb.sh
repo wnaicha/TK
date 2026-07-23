@@ -28,7 +28,7 @@ cpu=$(uname -m); [ "$cpu" = "x86_64" ] && cpu="amd64" || cpu="arm64"
 echo "==============================================="
 echo "  TikTok 矩阵环境-WebRTC强力拦截版 V22.3"
 echo "==============================================="
-echo " 1. 全新安装 (随机域名 + 随机参数)"
+echo " 1. 全新安装 (仅限 Apple 域名 + 随机参数)"
 echo " 2. 参数还原 (手动输入旧参数)"
 read -p "请选择 [1-2]: " MODE
 
@@ -48,8 +48,8 @@ if [ "$MODE" == "2" ]; then
     read -p "输入伪装域名: " RAND_DOMAIN
     RAND_PORT=443
 else
-    # V14.0 随机域名池逻辑
-    domains=("www.microsoft.com" "www.itunes.apple.com" "www.samsung.com" "www.nvidia.com" "www.cloudflare.com" "www.speedtest.net" "www.yahoo.com" "www.amd.com")
+    # V14.0 域名池逻辑 (已修改为单苹果域名)
+    domains=("www.apple.com")
     RAND_DOMAIN=${domains[$RANDOM % ${#domains[@]}]}
     uuid=$(/etc/s-box/sing-box generate uuid)
     short_id=$(/etc/s-box/sing-box generate rand --hex 4)
@@ -142,16 +142,16 @@ nb_info() {
     printf "    client-fingerprint: safari\n"
     echo "-----------------------------------------------"
     echo "🔗 VLESS 链接 / 📱 二维码"
-    echo -e "\033[32m$link\033[0m"
+    echo -e "\033[32m\$link\033[0m"
     echo "-----------------------------------------------"
-    qrencode -t ansiutf8 "$link"
+    qrencode -t ansiutf8 "\$link"
     echo "==============================================="
 }
 
 rm -f /usr/local/bin/nb
 cat <<EOF > /usr/local/bin/nb
 #!/bin/bash
-$(declare -f nb_info)
+\$(declare -f nb_info)
 nb_info
 EOF
 chmod +x /usr/local/bin/nb
