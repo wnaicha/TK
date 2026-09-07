@@ -184,7 +184,7 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
   fi
   rm -f /etc/danted.conf /etc/dante.conf
   # 清理本脚本创建的 socks 系统用户（USERS 为 user/pass 交替，只删 user 位）
-  local i=0
+  i=0
   while [[ $i -lt ${#USERS[@]} ]]; do
     userdel -r "${USERS[$i]}" 2>/dev/null || true
     i=$((i+2))
@@ -255,9 +255,9 @@ CONF
 
 # 5. 创建账号（系统用户，禁止登录）
 info "创建 SOCKS5 账号 ..."
-local i=0
+i=0
 while [[ $i -lt ${#USERS[@]} ]]; do
-  local u="${USERS[$i]}" p="${USERS[$((i+1))]}"
+  u="${USERS[$i]}"; p="${USERS[$((i+1))]}"
   if id "$u" >/dev/null 2>&1; then
     echo "$u:$p" | chpasswd
     log "账号已存在, 重置密码: $u / $p"
@@ -303,9 +303,9 @@ log " ✅ SOCKS5 搭建完成"
 log "    服务器: $IP"
 log "    端口:   $PORT"
 log ""
-local j=0
+j=0
 while [[ $j -lt ${#USERS[@]} ]]; do
-  local uu="${USERS[$j]}" pp="${USERS[$((j+1))]}"
+  uu="${USERS[$j]}"; pp="${USERS[$((j+1))]}"
   log " ┌────────────────────────────────────────────────"
   log " │ SK5 链接 (直接复制使用):"
   log " │   socks5://$uu:$pp@$IP:$PORT"
