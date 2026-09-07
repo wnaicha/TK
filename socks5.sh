@@ -309,6 +309,8 @@ while [[ $j -lt ${#USERS[@]} ]]; do
   log " ┌────────────────────────────────────────────────"
   log " │ SK5 链接 (直接复制使用):"
   log " │   socks5://$uu:$pp@$IP:$PORT"
+  log " │ 主机:端口:账号:密码:"
+  log " │   $IP:$PORT:$uu:$pp"
   log " │ 测试命令:"
   log " │   curl -x socks5h://$uu:$pp@$IP:$PORT https://api.ipify.org"
   log " └────────────────────────────────────────────────"
