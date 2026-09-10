@@ -6,7 +6,7 @@ set -e
 #   [架构] 采用直连最优解：VLESS + REALITY + Vision (无须域名/无惧封锁)
 #   [安全 1] 运行用户：专用非 root 用户 (sbxuser) + CAP_NET_BIND_SERVICE
 #   [安全 2] 完整性校验：下载 sing-box 时校验官方 API 提供的 SHA256
-#   [安全 3] Python 订阅服务安全加固：严格限定目录，防路径穿越
+#   [安全 3] Python 订阅服务安全加固：锁定 /etc/s-box/sub 目录，防路径穿越
 #   [性能 4] 吞吐优先网络 Stack 调优 (BBR/FQ + 进程/IO 调度 + sysctl 大缓冲区)
 #   [运维 5] 自动化维护：systemd timer 每日 0 点定时重启
 # 适配 Debian / Ubuntu
@@ -62,7 +62,7 @@ fi
 unset _iface
 
 # --- 2. 目录与架构 ---
-mkdir -p /etc/s-box
+mkdir -p /etc/s-box /etc/s-box/sub
 case "$(uname -m)" in
     x86_64|amd64)  cpu="amd64" ;;
     aarch64|arm64) cpu="arm64" ;;
@@ -132,7 +132,89 @@ echo ""
 echo "▸ 1. 参数设置"
 read_secret SUB_SALT "SUB_SALT 订阅盐值" "SUB_SALT"
 read_val NODE_NAME  "节点名称"           /etc/s-box/node_name  "NODE_NAME"  "TK-US-Reality"
-read_val SNI_DOMAIN "REALITY 借用目标域名" /etc/s-box/sni_domain "SNI_DOMAIN" "itunes.apple.com"
+
+# --- REALITY SNI 候选检测 ---
+REALITY_SNI_CANDIDATES=(
+    "itunes.apple.com"
+    "www.apple.com"
+    "www.icloud.com"
+    "www.microsoft.com"
+    "www.cloudflare.com"
+    "www.google.com"
+)
+
+test_sni_domain() {
+    local domain="$1"
+    local out rc
+    out=$(timeout 8 openssl s_client \
+        -connect "${domain}:443" \
+        -servername "${domain}" \
+        -tls1_3 </dev/null 2>&1) || rc=$?
+    rc=${rc:-0}
+
+    if [ "$rc" -eq 0 ] && \
+       echo "$out" | grep -q "Verify return code: 0 (ok)" && \
+       echo "$out" | grep -q "Protocol.*TLSv1.3"; then
+        return 0
+    fi
+    return 1
+}
+
+echo ""
+echo "▸ 2. 检测 REALITY SNI 候选域名"
+echo "  正在测试当前 VPS 到候选域名的 TLS 1.3 / 证书验证..."
+echo ""
+
+SNI_OK_LIST=()
+SNI_LATENCY_LIST=()
+
+for domain in "${REALITY_SNI_CANDIDATES[@]}"; do
+    start_ms=$(date +%s%3N 2>/dev/null || echo 0)
+    if test_sni_domain "$domain"; then
+        end_ms=$(date +%s%3N 2>/dev/null || echo "$start_ms")
+        if [ "$start_ms" -gt 0 ] 2>/dev/null && [ "$end_ms" -ge "$start_ms" ] 2>/dev/null; then
+            latency=$((end_ms - start_ms))
+        else
+            latency="-"
+        fi
+        SNI_OK_LIST+=("$domain")
+        SNI_LATENCY_LIST+=("$latency")
+        printf "  \033[32m✅ %-28s TLS1.3 / Verify OK / %sms\033[0m\n" "$domain" "$latency"
+    else
+        printf "  \033[31m❌ %-28s TLS1.3 或证书验证失败\033[0m\n" "$domain"
+    fi
+done
+
+if [ "${#SNI_OK_LIST[@]}" -eq 0 ]; then
+    echo ""
+    echo "❌ 没有检测到可用的 REALITY SNI 候选域名。"
+    echo "   请检查 VPS 出口网络、DNS、时间同步或 443/TCP 连通性。"
+    exit 1
+fi
+
+echo ""
+echo "可用候选："
+for i in "${!SNI_OK_LIST[@]}"; do
+    printf "  %d) %-28s %sms\n" "$((i+1))" "${SNI_OK_LIST[$i]}" "${SNI_LATENCY_LIST[$i]}"
+done
+
+echo ""
+while true; do
+    read -r -p "请选择 REALITY SNI [1-${#SNI_OK_LIST[@]}]（默认1）: " sni_choice
+    sni_choice="${sni_choice:-1}"
+    case "$sni_choice" in
+        ''|*[!0-9]*) echo "  ❌ 请输入数字"; continue ;;
+    esac
+    if [ "$sni_choice" -ge 1 ] && [ "$sni_choice" -le "${#SNI_OK_LIST[@]}" ]; then
+        SNI_DOMAIN="${SNI_OK_LIST[$((sni_choice-1))]}"
+        break
+    fi
+    echo "  ❌ 选择范围不正确"
+done
+
+echo "$SNI_DOMAIN" > /etc/s-box/sni_domain
+echo "  ✅ 已选择 REALITY SNI: $SNI_DOMAIN"
+
 read_val RAND_PORT  "代理监听端口"       /etc/s-box/listen_port "PORT"      "443"
 
 case "$RAND_PORT" in ''|*[!0-9]*) echo "❌ 端口必须是数字"; exit 1 ;; esac
@@ -140,7 +222,7 @@ case "$RAND_PORT" in ''|*[!0-9]*) echo "❌ 端口必须是数字"; exit 1 ;; es
 [ "$RAND_PORT" = "$SUB_PORT" ] && { echo "❌ 代理端口不能与订阅端口($SUB_PORT)冲突"; exit 1; }
 
 echo ""
-echo "▸ 2. sing-box 内核版本"
+echo "▸ 3. sing-box 内核版本"
 OLD_SB_VER=$(cat /etc/s-box/sb_version 2>/dev/null || echo "")
 if [ -n "$OLD_SB_VER" ]; then
     SB_VER="$OLD_SB_VER"
@@ -287,8 +369,6 @@ cat > "$CONF_PATH" <<JSON
 JSON
 
 /etc/s-box/sing-box check -c "$CONF_PATH" || { echo "❌ 配置校验失败"; exit 1; }
-chown "$SBX_USER":"$SBX_USER" "$CONF_PATH"
-chmod 640 "$CONF_PATH"
 
 # ================================================================
 # 安全订阅 HTTP 服务
@@ -303,7 +383,7 @@ import posixpath
 import urllib.parse
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-BASE_DIR = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.realpath("/etc/s-box/sub")
 
 class SafeHandler(http.server.SimpleHTTPRequestHandler):
     def list_directory(self, path):
@@ -326,11 +406,12 @@ class ReusableTCPServer(socketserver.TCPServer):
     allow_reuse_address = True
 
 if __name__ == "__main__":
+    if not os.path.exists(BASE_DIR):
+        os.makedirs(BASE_DIR, exist_ok=True)
     with ReusableTCPServer(("0.0.0.0", PORT), SafeHandler) as httpd:
         httpd.serve_forever()
 PYEOF
 chmod +x /etc/s-box/sub_server.py
-chown "$SBX_USER":"$SBX_USER" /etc/s-box/sub_server.py
 
 # ================================================================
 # Systemd 服务定义
@@ -404,12 +485,6 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-chown -R "$SBX_USER":"$SBX_USER" "$SUB_YAML_ROOT"
-
-systemctl daemon-reload
-systemctl enable sing-box sb-sub sing-box-restart.timer
-systemctl restart sing-box sb-sub sing-box-restart.timer
-
 # ================================================================
 # 生成订阅 YAML (Clash Meta 格式)
 # ================================================================
@@ -432,7 +507,6 @@ proxies:
       public-key: $pub_key
       short-id: $short_id
 YAML
-chown "$SBX_USER":"$SBX_USER" "${SUB_YAML_ROOT}/${_token}/proxy.yaml"
 
 # ================================================================
 # nb 快捷查询脚本
@@ -485,6 +559,25 @@ rm -f /usr/local/bin/nb
 { echo '#!/bin/bash'; declare -f nb_info; echo 'nb_info'; } > /usr/local/bin/nb
 chmod +x /usr/local/bin/nb
 
+# ================================================================
+# 权限统一收尾 & 启动服务
+# ================================================================
+# 确保 sing-box 专用用户可以访问整个配置目录
+chown -R "$SBX_USER":"$SBX_USER" /etc/s-box
+
+# sing-box 二进制可执行
+chmod 755 /etc/s-box/sing-box
+
+# 配置文件不要给其他用户读取（包含私钥与UUID）
+chmod 640 /etc/s-box/sb.json
+
+# 订阅目录及其子项权限
+chmod 755 /etc/s-box/sub
+
+systemctl daemon-reload
+systemctl enable sing-box sb-sub sing-box-restart.timer
+systemctl restart sing-box sb-sub sing-box-restart.timer
+
 echo ""
 echo "==================== 安装完成 ===================="
 echo "协议: VLESS + REALITY + Vision"
@@ -492,3 +585,4 @@ echo "伪装域名: $SNI_DOMAIN"
 echo "输入 nb 即可随时查看节点参数、二维码与订阅链接"
 echo "==================================================="
 /usr/local/bin/nb
+
