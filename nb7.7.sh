@@ -135,9 +135,9 @@ read_val NODE_NAME  "节点名称"           /etc/s-box/node_name  "NODE_NAME"  
 
 # --- REALITY SNI 候选检测 ---
 REALITY_SNI_CANDIDATES=(
-    "itunes.apple.com"
-    "www.apple.com"
     "www.icloud.com"
+    "www.apple.com"
+    "itunes.apple.com"
     "www.microsoft.com"
     "www.cloudflare.com"
     "www.google.com"
@@ -146,17 +146,22 @@ REALITY_SNI_CANDIDATES=(
 test_sni_domain() {
     local domain="$1"
     local out rc
-    out=$(timeout 8 openssl s_client \
+
+    out=$(timeout 5 openssl s_client \
         -connect "${domain}:443" \
         -servername "${domain}" \
-        -tls1_3 </dev/null 2>&1) || rc=$?
+        -tls1_3 \
+        -verify_return_error </dev/null 2>&1) || rc=$?
+
     rc=${rc:-0}
 
+    # 不依赖 OpenSSL 是否输出 Protocol 字段。
+    # 只要 TLS 1.3 握手成功且证书验证返回 0，即认为基础 SNI 连通性可用。
     if [ "$rc" -eq 0 ] && \
-       echo "$out" | grep -q "Verify return code: 0 (ok)" && \
-       echo "$out" | grep -q "Protocol.*TLSv1.3"; then
+       echo "$out" | grep -Eq 'Verify return code:[[:space:]]*0 \(ok\)'; then
         return 0
     fi
+
     return 1
 }
 
@@ -585,4 +590,3 @@ echo "伪装域名: $SNI_DOMAIN"
 echo "输入 nb 即可随时查看节点参数、二维码与订阅链接"
 echo "==================================================="
 /usr/local/bin/nb
-
