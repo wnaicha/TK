@@ -31,7 +31,7 @@ SUB_PORT="${SUB_PORT:-8080}"
 SBX_USER="sbxuser"
 GITHUB_REPO="SagerNet/sing-box"
 
-mkdir -p "$BASE" "$STATE" "$BACKUP" "$SUB_ROOT"
+mkdir -p "$BASE" "$STATE" "$BACKUP" "$SUB_ROOT" /usr/local/libexec
 
 log(){ printf '\033[1;36m[+]\033[0m %s\n' "$*"; }
 ok(){ printf '\033[1;32m[✓]\033[0m %s\n' "$*"; }
@@ -438,12 +438,28 @@ SELF=/usr/local/libexec/nb-core
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "请使用 root"; exit 1; }
 [[ -x "$SELF" ]] || { echo "nb-core 不存在"; exit 1; }
-exec "$SELF" "${@:-menu}"
+if (($#)); then
+  exec "$SELF" "$@"
+else
+  exec "$SELF" menu
+fi
 NB
   chmod 755 /usr/local/bin/nb
 
-  # Reuse this installed script as the core implementation.
-  install -m 0755 "$0" /usr/local/libexec/nb-core
+  # Install a durable management core. This works even when the installer
+  # itself was started with: bash <(curl -Ls URL)
+  local core="/usr/local/libexec/nb-core"
+  local source_url="${NB_SOURCE_URL:-https://raw.githubusercontent.com/wnaicha/TK/main/nb7-7.sh}"
+
+  if curl -fsSL --connect-timeout 10 --max-time 60 "$source_url" -o "${core}.new"; then
+    bash -n "${core}.new" || { rm -f "${core}.new"; die "下载的 nb-core 语法检查失败"; }
+    install -m 0755 "${core}.new" "$core"
+    rm -f "${core}.new"
+  elif [[ -f "$0" && -r "$0" && "$0" != /dev/fd/* && "$0" != /proc/*/fd/* ]]; then
+    install -m 0755 "$0" "$core"
+  else
+    die "无法持久化 nb-core。请检查 GitHub RAW 网络连接"
+  fi
 }
 
 show_info() {
@@ -548,6 +564,7 @@ repair_install() {
   generate_subscription
   open_ports
   systemctl restart sing-box sb-sub
+  write_nb
   ok "修复完成"
 }
 
