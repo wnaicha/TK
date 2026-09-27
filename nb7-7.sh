@@ -37,6 +37,11 @@ log(){ printf '\033[1;36m[+]\033[0m %s\n' "$*"; }
 ok(){ printf '\033[1;32m[✓]\033[0m %s\n' "$*"; }
 warn(){ printf '\033[1;33m[!]\033[0m %s\n' "$*"; }
 die(){ printf '\033[1;31m[✗]\033[0m %s\n' "$*" >&2; exit 1; }
+GREEN='\033[1;32m'
+CYAN='\033[1;36m'
+YELLOW='\033[1;33m'
+RESET='\033[0m'
+green(){ printf '\033[1;32m%s\033[0m\n' "$*"; }
 
 need_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "请使用 root 运行"; }
 need_root
@@ -142,37 +147,85 @@ REALITY_CANDIDATES=(
 )
 
 test_sni() {
-  local d="$1" out
+  local d="$1" out start_ms end_ms elapsed
+  start_ms="$(date +%s%3N 2>/dev/null || date +%s000)"
   out="$(timeout 7 openssl s_client -connect "${d}:443" -servername "$d" -tls1_3 \
       -verify_return_error </dev/null 2>&1)" || return 1
-  grep -Eq 'Verify return code:[[:space:]]*0 \(ok\)' <<<"$out"
+  grep -Eq 'Verify return code:[[:space:]]*0 \(ok\)' <<<"$out" || return 1
+  end_ms="$(date +%s%3N 2>/dev/null || date +%s000)"
+  elapsed=$((end_ms-start_ms))
+  printf '%s\n' "$elapsed"
 }
 
-choose_sni_auto() {
-  local d
+scan_sni() {
+  local i=1 d ms
+  SNI_SCAN_STATUS=()
+  SNI_SCAN_MS=()
+
+  echo
+  echo "=================================================="
+  echo "          REALITY 目标检测"
+  echo "=================================================="
+  echo "Apple 域名优先排序；检测完成后由你手动选择。"
+  echo
+
   for d in "${REALITY_CANDIDATES[@]}"; do
-    printf '  测试 %-28s ' "$d" >&2
-    if test_sni "$d"; then
-      printf '\033[32mOK\033[0m\n' >&2
-      printf '%s\n' "$d"
-      return 0
+    printf '  %d) %-28s ' "$i" "$d"
+    if ms="$(test_sni "$d")"; then
+      SNI_SCAN_STATUS+=("ok")
+      SNI_SCAN_MS+=("$ms")
+      printf '\033[1;32mOK\033[0m  %4sms' "$ms"
+      [[ "$i" -eq 1 ]] && printf '  \033[1;33m[第一优先/默认]\033[0m'
+      printf '\n'
     else
-      printf '\033[31mFAIL\033[0m\n' >&2
+      SNI_SCAN_STATUS+=("fail")
+      SNI_SCAN_MS+=("-")
+      printf '\033[1;31mFAIL\033[0m\n'
     fi
+    ((i++))
   done
-  return 1
+  echo
+  echo "  7) 手动输入其他域名"
+  echo "=================================================="
+}
+
+choose_sni_interactive() {
+  local n d ms
+  scan_sni >&2
+  while true; do
+    read -r -p "请选择 REALITY 域名 [默认 1 = www.apple.com]: " n
+    n="${n:-1}"
+
+    if [[ "$n" == "7" ]]; then
+      read -r -p "请输入域名: " d
+      [[ "$d" =~ ^[A-Za-z0-9.-]+$ ]] || { warn "域名格式错误"; continue; }
+      printf '检测 %-28s ' "$d" >&2
+      if ms="$(test_sni "$d")"; then
+        printf '\033[1;32mOK\033[0m  %sms\n' "$ms" >&2
+        printf '%s\n' "$d"
+        return 0
+      fi
+      printf '\033[1;31mFAIL\033[0m\n' >&2
+      warn "该域名未通过 TLS1.3/证书检测，请重新选择"
+      continue
+    fi
+
+    if [[ "$n" =~ ^[1-6]$ ]]; then
+      d="${REALITY_CANDIDATES[$((n-1))]}"
+      if [[ "${SNI_SCAN_STATUS[$((n-1))]}" == "ok" ]]; then
+        printf '%s\n' "$d"
+        return 0
+      fi
+      warn "$d 当前检测失败，请选择检测为 OK 的域名"
+      continue
+    fi
+    warn "请输入 1-7"
+  done
 }
 
 list_sni() {
-  local i=1 d
-  echo "REALITY 候选（Apple 优先）"
-  for d in "${REALITY_CANDIDATES[@]}"; do
-    printf '  %d) %-28s ' "$i" "$d"
-    test_sni "$d" && printf '\033[32m✓\033[0m\n' || printf '\033[31m✗\033[0m\n'
-    ((i++))
-  done
+  scan_sni
 }
-
 # ---------- identity ----------
 ensure_identity() {
   local kp
@@ -487,63 +540,50 @@ show_info() {
   yaml="$SUB_ROOT/$token/proxy.yaml"
 
   echo
-  echo "=================================================="
-  printf "              %s\n" "$name"
-  echo "=================================================="
-  echo "sing-box : $ver"
-  echo "状态     : $service_state"
-  echo "服务器   : $ip"
-  echo "端口     : $port"
-  echo "UDP      : $udp_text"
-  echo "SNI      : $sni"
+  printf '\033[1;36m==================================================\033[0m\n'
+  printf '\033[1;32m              %s\033[0m\n' "$name"
+  printf '\033[1;36m==================================================\033[0m\n'
+  printf '\033[1;32msing-box : %s\n状态     : %s\n服务器   : %s\n端口     : %s\nUDP      : %s\nSNI      : %s\033[0m\n' \
+    "$ver" "$service_state" "$ip" "$port" "$udp_text" "$sni"
   echo
-  echo "UUID:"
-  echo "$uuid"
-  echo
-  echo "Public Key:"
-  echo "$pub"
-  echo
-  echo "Short ID:"
-  echo "$sid"
+  printf '\033[1;32mUUID:\n%s\n\nPublic Key:\n%s\n\nShort ID:\n%s\033[0m\n' "$uuid" "$pub" "$sid"
 
   echo
-  echo "=================================================="
-  echo "【Mihomo / Clash Meta YAML】"
-  echo "=================================================="
-  echo
-  if [[ -f "$yaml" ]]; then
-    cat "$yaml"
-  else
+  printf '\033[1;36m==================================================\033[0m\n'
+  printf '\033[1;32m【Mihomo / Clash Meta YAML】\033[0m\n'
+  printf '\033[1;36m==================================================\033[0m\n\n'
+  if [[ ! -f "$yaml" ]]; then
     warn "YAML 文件不存在，正在重新生成..."
     generate_subscription
-    cat "$yaml"
   fi
+  printf '\033[1;32m'
+  cat "$yaml"
+  printf '\033[0m'
 
   echo
-  echo "=================================================="
-  echo "【VLESS 分享链接】"
-  echo "=================================================="
-  echo
-  echo "$link"
+  printf '\033[1;36m==================================================\033[0m\n'
+  printf '\033[1;32m【VLESS 分享链接】\033[0m\n'
+  printf '\033[1;36m==================================================\033[0m\n\n'
+  printf '\033[1;32m%s\033[0m\n' "$link"
 
   echo
-  echo "=================================================="
-  echo "【Mihomo 订阅地址】"
-  echo "=================================================="
-  echo
-  echo "http://${ip}:${SUB_PORT}/${token}/proxy.yaml"
+  printf '\033[1;36m==================================================\033[0m\n'
+  printf '\033[1;32m【Mihomo 订阅地址】\033[0m\n'
+  printf '\033[1;36m==================================================\033[0m\n\n'
+  printf '\033[1;32mhttp://%s:%s/%s/proxy.yaml\033[0m\n' "$ip" "$SUB_PORT" "$token"
 
   echo
-  echo "=================================================="
-  echo "【二维码】"
-  echo "=================================================="
-  echo
+  printf '\033[1;36m==================================================\033[0m\n'
+  printf '\033[1;32m【二维码】\033[0m\n'
+  printf '\033[1;36m==================================================\033[0m\n\n'
   if command -v qrencode >/dev/null 2>&1; then
+    printf '\033[1;32m'
     qrencode -t ansiutf8 "$link" || true
+    printf '\033[0m'
   else
-    echo "qrencode 未安装"
+    warn "qrencode 未安装"
   fi
-  echo "=================================================="
+  printf '\033[1;36m==================================================\033[0m\n'
 }
 show_qr() {
   local ip port uuid sni pub sid name link
@@ -556,23 +596,11 @@ show_qr() {
 }
 
 change_sni() {
-  local d n
-  list_sni
-  echo "  m) 手动输入"
-  read -r -p "请选择（默认 1 = www.apple.com）: " n
-  n="${n:-1}"
-  if [[ "$n" == "m" || "$n" == "M" ]]; then
-    read -r -p "输入域名: " d
-    [[ "$d" =~ ^[A-Za-z0-9.-]+$ ]] || die "域名格式错误"
-    test_sni "$d" || die "该目标 TLS1.3/证书检测失败"
-  elif [[ "$n" =~ ^[1-6]$ ]]; then
-    d="${REALITY_CANDIDATES[$((n-1))]}"
-    test_sni "$d" || die "该候选当前检测失败"
-  else
-    die "选择无效"
-  fi
+  local d
+  d="$(choose_sni_interactive)"
   state_set sni "$d"
   apply_config
+  ok "REALITY SNI 已修改为 $d"
 }
 
 change_port() {
@@ -823,8 +851,7 @@ case "$cmd" in
     sub_token >/dev/null
 
     if [[ ! -s "$STATE/sni" ]]; then
-      echo "检测 REALITY 目标；www.apple.com 为第一优先..."
-      sni="$(choose_sni_auto)" || die "没有可用 REALITY 候选"
+      sni="$(choose_sni_interactive)" || die "未选择可用 REALITY 目标"
       state_set sni "$sni"
     fi
 
