@@ -364,10 +364,10 @@ proxies:
     tls: true
     flow: xtls-rprx-vision
     servername: $sni
-    client-fingerprint: $CLIENT_FINGERPRINT
     reality-opts:
       public-key: $pub
       short-id: $sid
+    client-fingerprint: $CLIENT_FINGERPRINT
 EOF
   chown -R "$SBX_USER:$SBX_USER" "$SUB_ROOT"
   find "$SUB_ROOT" -type d -exec chmod 750 {} +
