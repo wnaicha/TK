@@ -294,6 +294,11 @@ generate_subscription() {
   dir="$SUB_ROOT/$token"
   mkdir -p "$dir"
 
+  local udp_state udp_yaml
+  udp_state="$(state_get udp)"
+  [[ -n "$udp_state" ]] || udp_state="on"
+  [[ "$udp_state" == "on" ]] && udp_yaml="true" || udp_yaml="false"
+
   cat >"$dir/proxy.yaml" <<EOF
 proxies:
   - name: "$name"
@@ -302,7 +307,7 @@ proxies:
     port: $port
     uuid: $uuid
     network: tcp
-    udp: true
+    udp: $udp_yaml
     tls: true
     flow: xtls-rprx-vision
     servername: $sni
@@ -424,6 +429,7 @@ open_ports() {
 
 # ---------- management CLI ----------
 write_nb() {
+  mkdir -p /usr/local/libexec
   cat >/usr/local/bin/nb <<'NB'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -463,29 +469,82 @@ NB
 }
 
 show_info() {
-  local ip port uuid sni pub sid name ver token link
-  ip="$(state_get server_ip)"; port="$(state_get port)"; uuid="$(state_get uuid)"
-  sni="$(state_get sni)"; pub="$(state_get reality_public)"; sid="$(state_get short_id)"
-  name="$(state_get node_name)"; ver="$("$BIN" version 2>/dev/null | head -1 || true)"
+  local ip port uuid sni pub sid name ver token link yaml udp_state udp_text service_state
+  ip="$(state_get server_ip)"
+  port="$(state_get port)"
+  uuid="$(state_get uuid)"
+  sni="$(state_get sni)"
+  pub="$(state_get reality_public)"
+  sid="$(state_get short_id)"
+  name="$(state_get node_name)"
+  ver="$("$BIN" version 2>/dev/null | head -1 || true)"
   token="$(sub_token)"
+  udp_state="$(state_get udp)"
+  [[ -n "$udp_state" ]] || udp_state="on"
+  [[ "$udp_state" == "on" ]] && udp_text="开启" || udp_text="关闭"
+  service_state="$(systemctl is-active sing-box 2>/dev/null || true)"
   link="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&encryption=none&pbk=${pub}&fp=safari&sni=${sni}&sid=${sid}&flow=xtls-rprx-vision#${name}"
+  yaml="$SUB_ROOT/$token/proxy.yaml"
 
-  echo "=================================================="
-  echo " Node : $name"
-  echo " Core : $ver"
-  echo " State: $(systemctl is-active sing-box 2>/dev/null || true)"
-  echo " SNI  : $sni"
-  echo " Port : $port (TCP/UDP)"
-  echo " UDP  : enabled"
-  echo " IP   : $ip"
-  echo "=================================================="
-  echo "$link"
   echo
-  echo "Mihomo subscription:"
+  echo "=================================================="
+  printf "              %s\n" "$name"
+  echo "=================================================="
+  echo "sing-box : $ver"
+  echo "状态     : $service_state"
+  echo "服务器   : $ip"
+  echo "端口     : $port"
+  echo "UDP      : $udp_text"
+  echo "SNI      : $sni"
+  echo
+  echo "UUID:"
+  echo "$uuid"
+  echo
+  echo "Public Key:"
+  echo "$pub"
+  echo
+  echo "Short ID:"
+  echo "$sid"
+
+  echo
+  echo "=================================================="
+  echo "【Mihomo / Clash Meta YAML】"
+  echo "=================================================="
+  echo
+  if [[ -f "$yaml" ]]; then
+    cat "$yaml"
+  else
+    warn "YAML 文件不存在，正在重新生成..."
+    generate_subscription
+    cat "$yaml"
+  fi
+
+  echo
+  echo "=================================================="
+  echo "【VLESS 分享链接】"
+  echo "=================================================="
+  echo
+  echo "$link"
+
+  echo
+  echo "=================================================="
+  echo "【Mihomo 订阅地址】"
+  echo "=================================================="
+  echo
   echo "http://${ip}:${SUB_PORT}/${token}/proxy.yaml"
+
+  echo
+  echo "=================================================="
+  echo "【二维码】"
+  echo "=================================================="
+  echo
+  if command -v qrencode >/dev/null 2>&1; then
+    qrencode -t ansiutf8 "$link" || true
+  else
+    echo "qrencode 未安装"
+  fi
   echo "=================================================="
 }
-
 show_qr() {
   local ip port uuid sni pub sid name link
   ip="$(state_get server_ip)"; port="$(state_get port)"; uuid="$(state_get uuid)"
@@ -600,6 +659,36 @@ restore_backup() {
   ok "恢复完成"
 }
 
+toggle_udp() {
+  local cur choice new
+  cur="$(state_get udp)"
+  [[ -n "$cur" ]] || cur="on"
+
+  echo
+  echo "当前 UDP：$([[ "$cur" == "on" ]] && echo "开启" || echo "关闭")"
+  echo "1) 开启 UDP（推荐/默认）"
+  echo "2) 关闭 UDP"
+  echo "0) 返回"
+  read -r -p "请选择: " choice
+
+  case "$choice" in
+    1) new="on" ;;
+    2) new="off" ;;
+    0) return 0 ;;
+    *) die "选择无效" ;;
+  esac
+
+  state_set udp "$new"
+  generate_subscription
+
+  if [[ "$new" == "on" ]]; then
+    ok "UDP 已开启；Mihomo YAML 已更新为 udp: true"
+  else
+    ok "UDP 已关闭；Mihomo YAML 已更新为 udp: false"
+    warn "当前 sing-box VLESS 服务端配置本身未设置全局 UDP Reject；此开关控制生成给客户端的 Mihomo 节点 UDP 能力。"
+  fi
+}
+
 network_test() {
   echo "== sing-box =="
   "$BIN" check -c "$CONF" && echo "config: OK"
@@ -608,37 +697,70 @@ network_test() {
   echo "== REALITY target =="
   test_sni "$(state_get sni)" && echo "$(state_get sni): TLS1.3/verify OK" || echo "$(state_get sni): FAIL"
   echo
-  echo "== UDP note =="
-  echo "Server UDP is enabled. WebRTC leak prevention must also block direct/bypass traffic on the client/router."
+  echo "== UDP =="
+  if [[ "$(state_get udp)" == "off" ]]; then
+    echo "Mihomo node UDP: disabled"
+  else
+    echo "Mihomo node UDP: enabled"
+  fi
+  echo "WebRTC 防泄漏仍需客户端/旁路由阻止绕过代理的直连流量；不能仅依赖关闭 UDP。"
+}
+
+uninstall_all() {
+  local ans
+  echo "这将停止并删除 sing-box、nb、订阅服务和 /etc/s-box。"
+  read -r -p "输入 DELETE 确认卸载: " ans
+  [[ "$ans" == "DELETE" ]] || return 0
+
+  systemctl disable --now sing-box sb-sub >/dev/null 2>&1 || true
+  rm -f /etc/systemd/system/sing-box.service /etc/systemd/system/sb-sub.service
+  systemctl daemon-reload
+  rm -f /usr/local/bin/nb /usr/local/libexec/nb-core
+  rm -rf /etc/s-box
+  rm -f /etc/sysctl.d/99-sing-box.conf
+  sysctl --system >/dev/null 2>&1 || true
+  ok "卸载完成"
+  exit 0
 }
 
 menu() {
   while true; do
     clear
-    show_info
+    echo "=================================================="
+    echo "          sing-box 节点管理"
+    echo "=================================================="
+    echo "节点：$(state_get node_name)"
+    echo "状态：$(systemctl is-active sing-box 2>/dev/null || true)"
+    echo "SNI ：$(state_get sni)"
+    echo "端口：$(state_get port)"
+    echo "UDP ：$([[ "$(state_get udp)" == "off" ]] && echo "关闭" || echo "开启")"
+    echo "=================================================="
     cat <<'EOF'
-1) 查看节点/分享信息
-2) 二维码
-3) 修改 REALITY SNI
-4) 修改监听端口
-5) 修改节点名称
-6) 网络/配置测试
-7) 查看日志
-8) 重启 sing-box
-9) 更新 stable 核心
-10) 修复/重装程序（保留节点身份）
-11) 重建节点身份（UUID/REALITY）
-12) 创建备份
-13) 恢复备份
-0) 退出
+1. 查看完整节点信息
+2. 修改 REALITY 域名
+3. 修改监听端口
+4. 修改节点名称
+5. UDP 开关
+6. 节点检测
+7. 查看运行日志
+8. 重启 sing-box
+9. 更新 sing-box
+10. 修复/重装
+11. 重建 UUID / REALITY
+12. 备份配置
+13. 恢复配置
+14. 卸载
+
+0. 退出
 EOF
+    echo "=================================================="
     read -r -p "请选择: " x
     case "$x" in
       1) show_info ;;
-      2) show_qr ;;
-      3) change_sni ;;
-      4) change_port ;;
-      5) change_name ;;
+      2) change_sni ;;
+      3) change_port ;;
+      4) change_name ;;
+      5) toggle_udp ;;
       6) network_test ;;
       7) journalctl -u sing-box -n 100 --no-pager ;;
       8) systemctl restart sing-box && ok "已重启" ;;
@@ -647,13 +769,14 @@ EOF
       11) rebuild_identity ;;
       12) backup_now ;;
       13) restore_backup ;;
+      14) uninstall_all ;;
       0) exit 0 ;;
       *) echo "无效选择" ;;
     esac
-    echo; read -r -p "回车继续..."
+    echo
+    read -r -p "回车继续..."
   done
 }
-
 # ---------- command dispatch ----------
 cmd="${1:-install}"
 case "$cmd" in
@@ -663,6 +786,7 @@ case "$cmd" in
   sni) change_sni ;;
   port) change_port ;;
   name) change_name ;;
+  udp) toggle_udp ;;
   test) network_test ;;
   logs) journalctl -u sing-box -n "${2:-100}" --no-pager ;;
   restart) systemctl restart sing-box; ok "已重启" ;;
@@ -671,6 +795,7 @@ case "$cmd" in
   rebuild) rebuild_identity ;;
   backup) backup_now ;;
   restore) restore_backup ;;
+  uninstall) uninstall_all ;;
   install)
     install_deps
     ensure_user
@@ -694,6 +819,7 @@ case "$cmd" in
       state_set port "$v"
     }
     ensure_identity
+    [[ -s "$STATE/udp" ]] || state_set udp "on"
     sub_token >/dev/null
 
     if [[ ! -s "$STATE/sni" ]]; then
@@ -725,7 +851,7 @@ case "$cmd" in
     show_info
     ;;
   *)
-    echo "用法: nb {info|qr|sni|port|name|test|logs|restart|update|reinstall|rebuild|backup|restore}"
+    echo "用法: nb {info|sni|port|name|udp|test|logs|restart|update|reinstall|rebuild|backup|restore|uninstall}"
     exit 2
     ;;
 esac
