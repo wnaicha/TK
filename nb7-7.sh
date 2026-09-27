@@ -364,7 +364,7 @@ proxies:
     tls: true
     flow: xtls-rprx-vision
     servername: $sni
-    client-fingerprint: safari
+    client-fingerprint: $CLIENT_FINGERPRINT
     reality-opts:
       public-key: $pub
       short-id: $sid
@@ -372,6 +372,8 @@ EOF
   chown -R "$SBX_USER:$SBX_USER" "$SUB_ROOT"
   find "$SUB_ROOT" -type d -exec chmod 750 {} +
   find "$SUB_ROOT" -type f -exec chmod 640 {} +
+  grep -Fxq "    client-fingerprint: $CLIENT_FINGERPRINT" "$dir/proxy.yaml" \
+    || die "Mihomo YAML 生成失败：缺少 client-fingerprint: $CLIENT_FINGERPRINT"
 }
 
 install_sub_server() {
@@ -493,6 +495,7 @@ STATE="$BASE/state"
 BACKUP="$BASE/backup"
 SUB_ROOT="$BASE/sub"
 SUB_PORT=8080
+CLIENT_FINGERPRINT="safari"
 SELF=/usr/local/libexec/nb-core
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "请使用 root"; exit 1; }
@@ -536,7 +539,7 @@ show_info() {
   [[ -n "$udp_state" ]] || udp_state="on"
   [[ "$udp_state" == "on" ]] && udp_text="开启" || udp_text="关闭"
   service_state="$(systemctl is-active sing-box 2>/dev/null || true)"
-  link="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&encryption=none&pbk=${pub}&fp=safari&sni=${sni}&sid=${sid}&flow=xtls-rprx-vision#${name}"
+  link="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&encryption=none&pbk=${pub}&fp=${CLIENT_FINGERPRINT}&sni=${sni}&sid=${sid}&flow=xtls-rprx-vision#${name}"
   yaml="$SUB_ROOT/$token/proxy.yaml"
 
   echo
@@ -590,7 +593,7 @@ show_qr() {
   ip="$(state_get server_ip)"; port="$(state_get port)"; uuid="$(state_get uuid)"
   sni="$(state_get sni)"; pub="$(state_get reality_public)"; sid="$(state_get short_id)"
   name="$(state_get node_name)"
-  link="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&encryption=none&pbk=${pub}&fp=safari&sni=${sni}&sid=${sid}&flow=xtls-rprx-vision#${name}"
+  link="vless://${uuid}@${ip}:${port}?type=tcp&security=reality&encryption=none&pbk=${pub}&fp=${CLIENT_FINGERPRINT}&sni=${sni}&sid=${sid}&flow=xtls-rprx-vision#${name}"
   echo "$link"
   command -v qrencode >/dev/null && qrencode -t ansiutf8 "$link"
 }
